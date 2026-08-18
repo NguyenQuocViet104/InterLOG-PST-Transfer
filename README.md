@@ -336,3 +336,16 @@ Phiên bản 1.1 đã đủ điều kiện để tiếp tục sử dụng trong 
 - [ ] Mở/import PST bằng Outlook Classic.
 - [ ] Kiểm tra folder, email mới/cũ và attachment.
 - [ ] Chỉ xử lý/xóa nguồn sau khi xác minh và bàn giao.
+
+## Phụ lục C - Mail Operations Dashboard (MVP)
+
+Repository có thêm MVP tại thư mục `dashboard/`:
+
+- React dashboard dành cho IT.
+- FastAPI backend và SQLite lưu job/event/history.
+- Tạo yêu cầu theo mailbox, Mailbox chính, Online Archive hoặc folder cụ thể.
+- Chọn lịch chạy, export engine và thư mục PST đích.
+- Timeline trạng thái từ lúc lên lịch đến export, transfer, verify và hoàn tất.
+- Mặc định bắt buộc `TEST MODE`; chưa truy cập mailbox thật.
+
+Thiết kế không nhận hoặc lưu password Microsoft 365 của người dùng. Hướng production ưu tiên Microsoft Purview eDiscovery/app-only/RBAC; OAuth tương tác là fallback. Outlook Classic automation không được chạy trong Windows Service.

@@ -18,3 +18,9 @@
 *.log
 Thumbs.db
 .DS_Store
+
+# Dashboard build/runtime
+dashboard/backend/.venv/
+dashboard/data/
+dashboard/frontend/node_modules/
+dashboard/frontend/dist/
