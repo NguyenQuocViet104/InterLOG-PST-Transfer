@@ -24,3 +24,5 @@ dashboard/backend/.venv/
 dashboard/data/
 dashboard/frontend/node_modules/
 dashboard/frontend/dist/
+**/__pycache__/
+*.py[cod]
