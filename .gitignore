@@ -1,0 +1,20 @@
+# Du lieu mail va file van hanh khong duoc commit
+*.pst
+*.ost
+*.eml
+*.msg
+*.bits-receipt.json
+
+# Cau hinh/secret
+.env
+.env.*
+*.key
+*.pfx
+*.p12
+
+# File tam va log
+*.tmp
+*.part
+*.log
+Thumbs.db
+.DS_Store
