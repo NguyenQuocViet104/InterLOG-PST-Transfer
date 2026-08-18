@@ -221,7 +221,7 @@ $destinationButton.Add_Click({ Browse-Destination })
 $step2.Controls.Add($destinationButton)
 
 $example = New-Object System.Windows.Forms.Label
-$example.Text = "Vi du: \\192.168.0.240\MailBackup\user_archive.pst  ->  D:\MAIL BACKUP\user"
+$example.Text = "Vi du: \\<IP-MAY-AO>\MailBackup\user_archive.pst  ->  D:\MAIL BACKUP\user"
 $example.ForeColor = [System.Drawing.Color]::FromArgb(82,100,122)
 $example.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $example.Location = New-Object System.Drawing.Point(155,109)
