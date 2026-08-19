@@ -6,6 +6,7 @@ Add-Type -AssemblyName System.Drawing
 $packageRoot = $PSScriptRoot
 $scriptsRoot = Join-Path $packageRoot "scripts"
 $bitsScript = Join-Path $scriptsRoot "start-pst-bits-transfer.ps1"
+$resumeScript = Join-Path $scriptsRoot "resume-pst-bits-transfer.ps1"
 
 function Quote-Argument {
     param([string]$Value)
@@ -128,6 +129,74 @@ function Start-BackgroundTransfer {
     }
 }
 
+function Reconnect-And-Resume {
+    $destination = $destinationBox.Text.Trim().Trim('"')
+    if (-not $destination -or -not [System.IO.Directory]::Exists($destination)) {
+        [System.Windows.Forms.MessageBox]::Show("Chua co thu muc dich hop le.", "InterLOG PST Transfer") | Out-Null
+        return
+    }
+    if (-not [System.IO.File]::Exists($resumeScript)) {
+        [System.Windows.Forms.MessageBox]::Show("Thieu script: $resumeScript", "Goi cong cu bi thieu file") | Out-Null
+        return
+    }
+
+    $resumeButton.Enabled = $false
+    $statusLabel.Text = "Dang kiem tra SMB va khoi phuc job cu..."
+    $form.Refresh()
+    try {
+        $arguments = "-NoProfile -ExecutionPolicy Bypass -File $(Quote-Argument $resumeScript) -DestinationDirectory $(Quote-Argument $destination)"
+        $info = New-Object System.Diagnostics.ProcessStartInfo
+        $info.FileName = "powershell.exe"
+        $info.Arguments = $arguments
+        $info.UseShellExecute = $false
+        $info.CreateNoWindow = $true
+        $info.RedirectStandardOutput = $true
+        $info.RedirectStandardError = $true
+        $process = [System.Diagnostics.Process]::Start($info)
+        $output = $process.StandardOutput.ReadToEnd()
+        $errorOutput = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw ($errorOutput + "`r`n" + $output).Trim() }
+
+        $result = $null
+        try { $result = $output.Trim() | ConvertFrom-Json } catch {}
+        if (-not $result) { throw "Khong doc duoc ket qua resume.`r`n$output" }
+
+        switch ([string]$result.status) {
+            "SOURCE_UNAVAILABLE" {
+                $statusLabel.Text = "CHUA KET NOI DUOC SMB - job van duoc giu nguyen"
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Chua truy cap duoc PST tren may ao:`r`n$($result.source)`r`n`r`n1. Bat VPN/LAN.`r`n2. Mo share bang File Explorer va dang nhap neu duoc hoi.`r`n3. Quay lai bam nut nay mot lan nua.`r`n`r`nKhong xoa job hoac file receipt.",
+                    "Chua ket noi duoc SMB"
+                ) | Out-Null
+            }
+            "SOURCE_CHANGED" {
+                $statusLabel.Text = "DUNG AN TOAN - PST NGUON DA THAY DOI"
+                [System.Windows.Forms.MessageBox]::Show(
+                    "PST nguon da thay doi kich thuoc/thoi gian sua. Cong cu khong resume de tranh file hong.`r`n`r`nCan IT kiem tra lai PST tren VM.",
+                    "PST nguon da thay doi"
+                ) | Out-Null
+            }
+            { $_ -in @("COMPLETE", "COMPLETE_EXISTING") } {
+                $statusLabel.Text = "HOAN TAT - PST dich da day du"
+                [System.Windows.Forms.MessageBox]::Show("PST dich da hoan tat va co dung kich thuoc.", "Da hoan tat") | Out-Null
+            }
+            default {
+                $statusLabel.Text = "DA GUI LENH RESUME - monitor dang tu xu ly"
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Da truy cap lai duoc PST nguon.`r`nDa gui lenh resume cho job cu (trang thai truoc: $($result.previousState)).`r`n`r`nNeu job da tai du 100%, monitor se tu chot thanh COMPLETE. Cho 10-30 giay roi bam Kiem tra job nen.",
+                    "Da ket noi lai va resume"
+                ) | Out-Null
+            }
+        }
+    }
+    catch {
+        $statusLabel.Text = "LOI RESUME - job cu van duoc giu nguyen"
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, "Khong resume duoc job") | Out-Null
+    }
+    finally { $resumeButton.Enabled = $true }
+}
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "InterLOG PST Transfer - IT"
 $form.Size = New-Object System.Drawing.Size(900, 690)
@@ -239,21 +308,29 @@ $startButton = New-Object System.Windows.Forms.Button
 $startButton.Text = "BAT DAU CHAY NGAM / TU RESUME"
 $startButton.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
 $startButton.Location = New-Object System.Drawing.Point(18,181)
-$startButton.Size = New-Object System.Drawing.Size(330,52)
+$startButton.Size = New-Object System.Drawing.Size(275,52)
 $startButton.Add_Click({ Start-BackgroundTransfer })
 $step2.Controls.Add($startButton)
 
 $statusButton = New-Object System.Windows.Forms.Button
 $statusButton.Text = "Kiem tra job nen"
-$statusButton.Location = New-Object System.Drawing.Point(360,191)
+$resumeButton = New-Object System.Windows.Forms.Button
+$resumeButton.Text = "KET NOI LAI / RESUME"
+$resumeButton.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$resumeButton.Location = New-Object System.Drawing.Point(302,191)
+$resumeButton.Size = New-Object System.Drawing.Size(180,34)
+$resumeButton.Add_Click({ Reconnect-And-Resume })
+$step2.Controls.Add($resumeButton)
+
+$statusButton.Location = New-Object System.Drawing.Point(491,191)
 $statusButton.Size = New-Object System.Drawing.Size(145,34)
 $statusButton.Add_Click({ Show-JobStatus })
 $step2.Controls.Add($statusButton)
 
 $openButton = New-Object System.Windows.Forms.Button
 $openButton.Text = "Mo thu muc dich"
-$openButton.Location = New-Object System.Drawing.Point(515,191)
-$openButton.Size = New-Object System.Drawing.Size(145,34)
+$openButton.Location = New-Object System.Drawing.Point(645,191)
+$openButton.Size = New-Object System.Drawing.Size(169,34)
 $openButton.Add_Click({
     $path = $destinationBox.Text.Trim().Trim('"')
     if ($path) {

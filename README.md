@@ -2,7 +2,7 @@
 
 **Tên dự án:** InterLOG PST Transfer
 
-**Phiên bản:** 1.1
+**Phiên bản:** 1.2
 
 **Ngày báo cáo:** 18/08/2026
 
@@ -318,7 +318,7 @@ Phiên bản 1.1 đã đủ điều kiện để tiếp tục sử dụng trong 
 
 ## Phụ lục A - Thông tin gói phát hành
 
-**Tên file:** `InterLOG-PST-Transfer-v1.1.zip`
+**Tên file:** `InterLOG-PST-Transfer-v1.2.zip`
 
 **SHA-256:** `B65976703E5279949DAF1C99CD434B087B1E2931264E249E14F86A3E27553B99`
 
@@ -349,3 +349,11 @@ Repository có thêm MVP tại thư mục `dashboard/`:
 - Mặc định bắt buộc `TEST MODE`; chưa truy cập mailbox thật.
 
 Thiết kế không nhận hoặc lưu password Microsoft 365 của người dùng. Hướng production ưu tiên Microsoft Purview eDiscovery/app-only/RBAC; OAuth tương tác là fallback. Outlook Classic automation không được chạy trong Windows Service.
+
+## Phụ lục D - Thay đổi phiên bản 1.2
+
+- Thêm nút **KẾT NỐI LẠI / RESUME** trên giao diện.
+- Sau khi IT bật VPN/LAN hoặc đăng nhập lại SMB bằng File Explorer, công cụ kiểm tra PST nguồn rồi resume đúng BITS job cũ.
+- Nếu job đã ở trạng thái `Transferred`, công cụ tự khởi động lại monitor để chốt file thành `COMPLETE`.
+- Khi bấm Start trên một job đã tồn tại, monitor luôn được gọi lại; không còn phải chạy PowerShell thủ công nếu monitor trước đó đã dừng.
+- Nếu PST nguồn không truy cập được hoặc đã thay đổi, công cụ dừng an toàn và giữ nguyên job/receipt.

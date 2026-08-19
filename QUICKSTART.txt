@@ -1,0 +1,23 @@
+INTERLOG PST TRANSFER v1.2 - HUONG DAN NHANH
+================================================
+
+1. Giai nen TOAN BO file ZIP tren may user.
+2. Bam START-PST-TRANSFER.cmd.
+3. Chon PST tren may ao/share va thu muc local tren may user.
+4. Bam BAT DAU CHAY NGAM / TU RESUME.
+
+KHI MAT MANG / SMB / VPN:
+- KHONG xoa PST dang tai, receipt hoac BITS job.
+- Ket noi lai VPN/LAN.
+- Mo share bang File Explorer va dang nhap neu Windows yeu cau.
+- Mo lai cong cu, chon dung thu muc dich cu.
+- Bam KET NOI LAI / RESUME.
+- Cho 10-30 giay, bam Kiem tra job nen.
+
+Neu BITS da tai du 100% nhung con hien Transferred, nut KET NOI LAI / RESUME
+se tu khoi dong monitor va chot PST thanh COMPLETE.
+
+Chi xoa PST tren may ao sau khi:
+- Cong cu bao COMPLETE.
+- PST dich co dung kich thuoc.
+- Outlook Classic mo duoc PST va IT da kiem tra du lieu.

@@ -8,6 +8,14 @@ param(
 $ErrorActionPreference = "Stop"
 Import-Module BitsTransfer
 
+function Start-TransferMonitor {
+    $monitorPath = Join-Path $PSScriptRoot "monitor-pst-bits-transfers.ps1"
+    Start-Process -FilePath "powershell.exe" -ArgumentList @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+        "-File", ('"' + $monitorPath + '"')
+    ) -WindowStyle Hidden
+}
+
 $source = [System.IO.Path]::GetFullPath($SourcePst.Trim().Trim('"'))
 $destinationRoot = [System.IO.Path]::GetFullPath($DestinationDirectory.Trim().Trim('"'))
 if ([System.IO.Path]::GetExtension($source) -ine ".pst") { throw "Source must be a .pst file: $source" }
@@ -26,6 +34,9 @@ if ([System.IO.File]::Exists($receiptPath)) {
         if ($activeStates -contains ([string]$oldReceipt.status).ToUpperInvariant()) {
             $oldJob = Get-BitsTransfer -ErrorAction SilentlyContinue | Where-Object { $_.JobId.ToString() -eq [string]$oldReceipt.bitsJobId } | Select-Object -First 1
             if ($oldJob) {
+                # The previous monitor might have stopped while the network was down.
+                # Always relaunch it so an existing job can resume/finalize itself.
+                Start-TransferMonitor
                 Write-Output (@{status="ALREADY_RUNNING";jobId=$oldJob.JobId.ToString();jobState=[string]$oldJob.JobState;destination=$destination;receipt=$receiptPath} | ConvertTo-Json -Compress)
                 exit 0
             }
@@ -73,5 +84,5 @@ if (-not $NoStartupRegistration) {
     $runCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $monitor + '"'
     New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "InterLOGPstTransferMonitor" -Value $runCommand -PropertyType String -Force | Out-Null
 }
-Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File",('"'+$monitor+'"')) -WindowStyle Hidden
+Start-TransferMonitor
 Write-Output (@{status="TRANSFERRING_BACKGROUND";jobId=$job.JobId.ToString();source=$source;destination=$destination;receipt=$receiptPath} | ConvertTo-Json -Compress)
