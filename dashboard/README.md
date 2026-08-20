@@ -1,6 +1,6 @@
 # InterLOG Mail Operations Dashboard
 
-Phiên bản dashboard `0.3.0` dành cho IT quản lý toàn bộ vòng đời một yêu cầu backup PST: tiếp nhận yêu cầu, chọn đúng phạm vi, lên lịch export trên VM, xác nhận PST, theo dõi chuyển file và lưu lịch sử trong SQLite.
+Phiên bản dashboard `0.3.1` dành cho IT quản lý toàn bộ vòng đời một yêu cầu backup PST: tiếp nhận yêu cầu, chọn đúng phạm vi, lên lịch export trên VM, xác nhận PST, theo dõi chuyển file và lưu lịch sử trong SQLite.
 
 ## Các màn hình
 
@@ -18,6 +18,8 @@ Phiên bản dashboard `0.3.0` dành cho IT quản lý toàn bộ vòng đời m
 3. IT export đúng phạm vi trên VM, đóng Outlook, mở chi tiết job và bấm `PST đã export xong`.
 4. Công cụ PST Transfer chạy BITS ở máy đích; API `/api/jobs/{id}/receipt` nhận receipt để hiển thị byte, lỗi SMB, resume và `COMPLETE`.
 5. Toàn bộ thao tác được lưu trong `dashboard/data/dashboard.db`.
+
+Với mailbox chính, engine `Graph local` cho phép dashboard ghi nhận PST được tạo từ Graph sync read-only. Endpoint `complete-local` kiểm tra file PST/manifest tồn tại trước khi chuyển job sang `COMPLETE`; luồng này không được dùng để đại diện cho Online Archive.
 
 Dashboard có tìm kiếm theo email/ticket, lọc trạng thái, chi tiết job, timeline, retry, hủy job và trạng thái heartbeat của VM worker.
 

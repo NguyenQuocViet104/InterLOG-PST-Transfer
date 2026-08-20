@@ -1,86 +1,1178 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { createRoot } from 'react-dom/client'
+import React, { useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
 import {
-  Archive, ArrowLeftRight, CalendarClock, Check, CheckCircle2, ChevronRight,
-  CircleAlert, Clock3, Database, Download, FileArchive, HardDrive, History,
-  Inbox, LayoutDashboard, ListTodo, MonitorCog, Plus, RefreshCw, RotateCcw,
-  Search, Server, Settings, ShieldCheck, X, XCircle
-} from 'lucide-react'
-import './styles.css'
+  Archive,
+  ArrowLeftRight,
+  CalendarClock,
+  Check,
+  CheckCircle2,
+  ChevronRight,
+  CircleAlert,
+  Clock3,
+  Database,
+  Download,
+  FileArchive,
+  HardDrive,
+  History,
+  Inbox,
+  LayoutDashboard,
+  ListTodo,
+  MonitorCog,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Server,
+  Settings,
+  ShieldCheck,
+  X,
+  XCircle,
+} from "lucide-react";
+import "./styles.css";
 
-const API=import.meta.env.VITE_API_URL||''
-const scopes={primary:'Mailbox chính',online_archive:'Online Archive',folder:'Thư mục cụ thể'}
-const statusNames={SCHEDULED:'Đã lên lịch',WAITING_OPERATOR:'Chờ IT export',EXPORTING:'Đang export',PST_READY:'PST sẵn sàng',WAITING_TRANSFER:'Chờ chuyển PST',TRANSFERRING:'Đang chuyển',VERIFYING:'Đang xác minh',COMPLETE:'Hoàn tất',FAILED:'Thất bại',CANCELLED:'Đã hủy'}
-const finalStates=['COMPLETE','FAILED','CANCELLED']
-const fmtDate=v=>v?new Intl.DateTimeFormat('vi-VN',{dateStyle:'short',timeStyle:'short'}).format(new Date(v)):'—'
-const fmtBytes=n=>!n?'0 B':n>=1073741824?`${(n/1073741824).toFixed(2)} GB`:`${(n/1048576).toFixed(1)} MB`
+const API = import.meta.env.VITE_API_URL || "";
+const scopes = {
+  primary: "Mailbox chính",
+  online_archive: "Online Archive",
+  folder: "Thư mục cụ thể",
+};
+const statusNames = {
+  SCHEDULED: "Đã lên lịch",
+  WAITING_OPERATOR: "Chờ IT export",
+  WAITING_GRAPH: "Chờ Graph backup",
+  EXPORTING: "Đang export",
+  PST_READY: "PST sẵn sàng",
+  WAITING_TRANSFER: "Chờ chuyển PST",
+  TRANSFERRING: "Đang chuyển",
+  VERIFYING: "Đang xác minh",
+  COMPLETE: "Hoàn tất",
+  FAILED: "Thất bại",
+  CANCELLED: "Đã hủy",
+};
+const engineNames = {
+  purview: "Microsoft Purview",
+  outlook_manual: "Outlook Classic",
+  graph_local: "Graph local",
+};
+const finalStates = ["COMPLETE", "FAILED", "CANCELLED"];
+const fmtDate = (v) =>
+  v
+    ? new Intl.DateTimeFormat("vi-VN", {
+        dateStyle: "short",
+        timeStyle: "short",
+      }).format(new Date(v))
+    : "—";
+const fmtBytes = (n) =>
+  !n
+    ? "0 B"
+    : n >= 1073741824
+      ? `${(n / 1073741824).toFixed(2)} GB`
+      : `${(n / 1048576).toFixed(1)} MB`;
 
-async function request(path,options){const response=await fetch(`${API}${path}`,options);if(!response.ok){let message='Thao tác thất bại';try{const body=await response.json();message=body.detail||message}catch{}throw new Error(message)}return response.json()}
-
-function Status({value}){const tone=value==='COMPLETE'?'success':value==='FAILED'?'danger':value==='CANCELLED'?'neutral':value==='WAITING_OPERATOR'?'warning':'info';return <span className={`badge ${tone}`}><i/>{statusNames[value]||value}</span>}
-function ScopeIcon({scope}){return <span className="scope-icon">{scope==='online_archive'?<Archive/>:<Inbox/>}</span>}
-function Progress({job,large=false}){return <div className={`progress-wrap ${large?'large':''}`}><div className="progress-track"><i style={{width:`${job.progress}%`}}/></div><b>{job.progress}%</b></div>}
-function Empty({title='Chưa có dữ liệu',text='Dữ liệu phù hợp sẽ xuất hiện tại đây.'}){return <div className="empty-state"><FileArchive/><strong>{title}</strong><span>{text}</span></div>}
-
-function NewJob({workers,onClose,onSaved}){
-  const d=new Date(Date.now()+60000);d.setMinutes(d.getMinutes()-d.getTimezoneOffset())
-  const [form,setForm]=useState({mailbox:'',scope:'online_archive',folder_name:'',export_engine:'outlook_manual',auth_mode:'interactive_oauth',scheduled_at:d.toISOString().slice(0,16),destination:'D:\\MAIL BACKUP',ticket:'',requested_by:'',assigned_worker:workers[0]?.id||'vm-worker-01',note:''})
-  const [busy,setBusy]=useState(false),[error,setError]=useState('')
-  const set=(key,value)=>setForm({...form,[key]:value})
-  const submit=async e=>{e.preventDefault();setBusy(true);setError('');try{await request('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...form,scheduled_at:new Date(form.scheduled_at).toISOString()})});onSaved();onClose()}catch(err){setError(err.message)}finally{setBusy(false)}}
-  return <div className="overlay"><form className="dialog job-dialog" onSubmit={submit}>
-    <div className="dialog-title"><div><span className="overline">YÊU CẦU BACKUP</span><h2>Tạo công việc mới</h2><p>Chọn chính xác nguồn dữ liệu trước khi lên lịch cho VM.</p></div><button type="button" className="icon-button" onClick={onClose} aria-label="Đóng"><X/></button></div>
-    <div className="step-label"><span>1</span>Thông tin yêu cầu</div><div className="form-grid">
-      <label className="span-2">Email cần backup<input required type="email" placeholder="mailbox-test@company.com" value={form.mailbox} onChange={e=>set('mailbox',e.target.value)}/></label>
-      <label>Mã ticket<input placeholder="INC-000123" value={form.ticket} onChange={e=>set('ticket',e.target.value)}/></label><label>Người yêu cầu<input placeholder="Tên user / phòng ban" value={form.requested_by} onChange={e=>set('requested_by',e.target.value)}/></label>
-    </div>
-    <div className="step-label"><span>2</span>Phạm vi và phương thức</div><div className="scope-options">{[['online_archive','Online Archive','Chỉ dữ liệu trong archive online'],['primary','Mailbox chính','Inbox, Sent Items và các folder'],['folder','Thư mục cụ thể','Một folder và các folder con']].map(([v,t,s])=><button type="button" className={form.scope===v?'selected':''} onClick={()=>set('scope',v)} key={v}><ScopeIcon scope={v}/><b>{t}</b><small>{s}</small>{form.scope===v&&<Check/>}</button>)}</div>
-    {form.scope==='folder'&&<label className="single-field">Đường dẫn thư mục<input required placeholder="Ví dụ: Inbox/Projects/2026" value={form.folder_name} onChange={e=>set('folder_name',e.target.value)}/></label>}
-    <div className="form-grid"><label>Quy trình export<select value={form.export_engine} onChange={e=>{const v=e.target.value;setForm({...form,export_engine:v,auth_mode:v==='purview'?'app_only':'interactive_oauth'})}}><option value="outlook_manual">Outlook Classic — IT thực hiện</option><option value="purview">Microsoft Purview — chưa kích hoạt</option></select></label><label>VM worker<select value={form.assigned_worker} onChange={e=>set('assigned_worker',e.target.value)}>{workers.map(w=><option key={w.id} value={w.id}>{w.display_name} · {w.status}</option>)}</select></label><label>Thời gian bắt đầu<input required type="datetime-local" value={form.scheduled_at} onChange={e=>set('scheduled_at',e.target.value)}/></label><label>Thư mục đích trên máy user<input required value={form.destination} onChange={e=>set('destination',e.target.value)}/></label><label className="span-2">Ghi chú<textarea rows="2" value={form.note} onChange={e=>set('note',e.target.value)}/></label></div>
-    <div className="safe-callout"><ShieldCheck/><div><b>Không yêu cầu hoặc lưu mật khẩu user</b><span>Outlook Classic là bước IT có giám sát. Purview production sẽ dùng certificate và RBAC.</span></div></div>{error&&<div className="error-callout">{error}</div>}
-    <div className="dialog-actions"><button type="button" className="btn secondary" onClick={onClose}>Hủy</button><button className="btn primary" disabled={busy}><CalendarClock/>{busy?'Đang tạo...':'Lên lịch backup'}</button></div>
-  </form></div>
-}
-
-function ReadyDialog({job,onClose,onSaved}){const [path,setPath]=useState(job.pst_path||`C:\\MailBackup\\${job.mailbox.replace('@','_')}.pst`),[size,setSize]=useState(''),[error,setError]=useState('');const submit=async e=>{e.preventDefault();try{await request(`/api/jobs/${job.id}/operator-ready`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pst_path:path,size_bytes:size?Math.round(Number(size)*1073741824):0})});onSaved();onClose()}catch(err){setError(err.message)}};return <div className="overlay"><form className="dialog compact" onSubmit={submit}><div className="dialog-title"><div><span className="overline">XÁC NHẬN EXPORT</span><h2>PST đã sẵn sàng</h2><p>Chỉ xác nhận sau khi Outlook export xong và đã đóng.</p></div><button type="button" className="icon-button" onClick={onClose}><X/></button></div><label className="single-field">Đường dẫn PST trên VM<input required value={path} onChange={e=>setPath(e.target.value)}/></label><label className="single-field">Dung lượng gần đúng (GB, không bắt buộc)<input type="number" min="0" step="0.01" value={size} onChange={e=>setSize(e.target.value)}/></label>{error&&<div className="error-callout">{error}</div>}<div className="dialog-actions"><button type="button" className="btn secondary" onClick={onClose}>Quay lại</button><button className="btn primary"><CheckCircle2/>Xác nhận PST</button></div></form></div>}
-
-function JobDrawer({jobId,onClose,onChanged,notify}){const [data,setData]=useState(null),[ready,setReady]=useState(false);const load=async()=>setData(await request(`/api/jobs/${jobId}`));useEffect(()=>{load()},[jobId]);const action=async name=>{try{await request(`/api/jobs/${jobId}/${name}`,{method:'POST'});await load();onChanged();notify(name==='retry'?'Đã đưa job về hàng đợi':'Đã hủy job')}catch(e){notify(e.message,'error')}};if(!data)return <div className="drawer-overlay"><section className="drawer"><div className="loading">Đang tải...</div></section></div>;const j=data.job;return <div className="drawer-overlay" onMouseDown={e=>e.target===e.currentTarget&&onClose()}><section className="drawer"><div className="drawer-title"><div><span className="overline">JOB #{String(j.id).padStart(4,'0')}</span><h2>{j.mailbox}</h2><Status value={j.status}/></div><button className="icon-button" onClick={onClose}><X/></button></div><div className="drawer-progress"><div><b>{j.progress}%</b><span>{fmtBytes(j.bytes_done)} / {fmtBytes(j.bytes_total)}</span></div><Progress job={j} large/></div>{j.error&&<div className="error-callout icon"><CircleAlert/>{j.error}</div>}<div className="metadata"><div><span>Phạm vi</span><b>{scopes[j.scope]}{j.folder_name?` · ${j.folder_name}`:''}</b></div><div><span>Lịch chạy</span><b>{fmtDate(j.scheduled_at)}</b></div><div><span>Ticket</span><b>{j.ticket||'—'}</b></div><div><span>Người yêu cầu</span><b>{j.requested_by||'—'}</b></div><div><span>Worker</span><b>{j.assigned_worker}</b></div><div><span>Engine</span><b>{j.export_engine==='purview'?'Purview':'Outlook Classic'}</b></div><div className="span-2"><span>File PST / thư mục đích</span><b>{j.pst_path||j.destination}</b></div></div><div className="drawer-actions">{j.status==='WAITING_OPERATOR'&&<button className="btn primary" onClick={()=>setReady(true)}><CheckCircle2/>PST đã export xong</button>}{!['COMPLETE','CANCELLED'].includes(j.status)&&<button className="btn secondary" onClick={()=>action('retry')}><RotateCcw/>Thử lại / tiếp tục</button>}{!['COMPLETE','CANCELLED'].includes(j.status)&&<button className="btn danger" onClick={()=>action('cancel')}><XCircle/>Hủy job</button>}</div><div className="section-heading"><h3>Lịch sử xử lý</h3><span>{data.events.length} sự kiện</span></div><div className="timeline">{data.events.map(e=><div className="timeline-item" key={e.id}><i className={e.level.toLowerCase()}/><div><p>{e.message}</p><span>{fmtDate(e.created_at)} · {e.level}</span></div></div>)}</div>{ready&&<ReadyDialog job={j} onClose={()=>setReady(false)} onSaved={async()=>{await load();onChanged();notify('Đã xác nhận PST sẵn sàng')}}/>}</section></div>}
-
-function JobTable({jobs,onOpen,emptyText}){if(!jobs.length)return <Empty title={emptyText||'Chưa có job'}/>;return <div className="table-scroll"><table><thead><tr><th>Mailbox / phạm vi</th><th>Lịch chạy</th><th>Trạng thái</th><th>Tiến độ</th><th>Worker</th><th></th></tr></thead><tbody>{jobs.map(j=><tr key={j.id} onClick={()=>onOpen(j.id)}><td><div className="mailbox-cell"><ScopeIcon scope={j.scope}/><div><b>{j.mailbox}</b><span>{scopes[j.scope]}{j.folder_name?` · ${j.folder_name}`:''}{j.ticket?` · ${j.ticket}`:''}</span></div></div></td><td><b>{fmtDate(j.scheduled_at)}</b><small>#{String(j.id).padStart(4,'0')}</small></td><td><Status value={j.status}/></td><td><Progress job={j}/></td><td><span className="worker-chip">{j.assigned_worker}</span></td><td><ChevronRight className="chevron"/></td></tr>)}</tbody></table></div>}
-
-function Overview({data,onNew,onOpen,setView}){const cards=[['Tổng yêu cầu',data.summary.total,Database,'slate'],['Đang xử lý',data.summary.active,Clock3,'blue'],['Hoàn tất',data.summary.complete,CheckCircle2,'green'],['Cần xử lý',data.summary.failed,CircleAlert,'red']];return <><div className="hero"><div><span className="overline">MAIL OPERATIONS CENTER</span><h1>Tổng quan backup</h1><p>Theo dõi từ yêu cầu export đến lúc PST được bàn giao an toàn.</p></div><button className="btn primary" onClick={onNew}><Plus/>Tạo yêu cầu</button></div><section className="stat-grid">{cards.map(([t,v,I,c])=><article className="stat-card" key={t}><span className={`stat-icon ${c}`}><I/></span><div><small>{t}</small><b>{v}</b><p>Toàn bộ dữ liệu SQLite</p></div></article>)}</section><section className="overview-grid"><div className="card"><div className="card-title"><div><h2>Công việc gần đây</h2><p>Các job mới nhất trong hệ thống</p></div><button className="link-button" onClick={()=>setView('jobs')}>Xem tất cả <ChevronRight/></button></div><JobTable jobs={data.jobs.slice(0,7)} onOpen={onOpen}/></div><div className="card activity-card"><div className="card-title"><div><h2>Hoạt động mới</h2><p>Audit log gần nhất</p></div></div><div className="timeline">{data.events.slice(0,9).map(e=><div className="timeline-item" key={e.id}><i className={e.level.toLowerCase()}/><div><b>{e.mailbox}</b><p>{e.message}</p><span>{fmtDate(e.created_at)}</span></div></div>)}</div></div></section></>}
-
-function Jobs({jobs,onOpen,onNew}){const [query,setQuery]=useState(''),[filter,setFilter]=useState('ALL');const filtered=useMemo(()=>jobs.filter(j=>{const text=`${j.mailbox} ${j.ticket} ${j.requested_by}`.toLowerCase().includes(query.toLowerCase());const state=filter==='ALL'||(filter==='ACTIVE'?!finalStates.includes(j.status):j.status===filter);return text&&state}),[jobs,query,filter]);return <><PageTitle overline="VẬN HÀNH" title="Công việc backup" text="Quản lý toàn bộ yêu cầu và vòng đời PST"><button className="btn primary" onClick={onNew}><Plus/>Tạo yêu cầu</button></PageTitle><div className="card"><Toolbar query={query} setQuery={setQuery} filter={filter} setFilter={setFilter}/><JobTable jobs={filtered} onOpen={onOpen} emptyText="Không có job phù hợp"/></div></>}
-function Toolbar({query,setQuery,filter,setFilter}){const options=[['ALL','Tất cả'],['ACTIVE','Đang xử lý'],['WAITING_OPERATOR','Chờ IT'],['COMPLETE','Hoàn tất'],['FAILED','Lỗi']];return <div className="toolbar"><div className="search-box"><Search/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Tìm email, ticket, người yêu cầu..."/></div><div className="segmented">{options.map(([v,l])=><button className={filter===v?'selected':''} onClick={()=>setFilter(v)} key={v}>{l}</button>)}</div></div>}
-function Transfers({jobs,onOpen}){const transfers=jobs.filter(j=>['PST_READY','WAITING_TRANSFER','TRANSFERRING','VERIFYING','COMPLETE','FAILED'].includes(j.status)&&j.pst_path);return <><PageTitle overline="BITS TRANSFER" title="Chuyển PST" text="Theo dõi file lớn, lỗi mạng, resume và xác minh dữ liệu"/><div className="card transfer-list">{transfers.length?transfers.map(j=><button key={j.id} onClick={()=>onOpen(j.id)}><span className="file-icon"><HardDrive/></span><span className="transfer-main"><b>{j.mailbox}</b><small>{j.pst_path}</small><Progress job={j}/></span><span className="transfer-size"><b>{fmtBytes(j.bytes_done)}</b><small>trên {fmtBytes(j.bytes_total)}</small></span><Status value={j.status}/><ChevronRight/></button>):<Empty title="Chưa có PST đang chuyển" text="Xác nhận export xong trong chi tiết job để bắt đầu chặng transfer."/>}</div></>}
-function HistoryView({events}){const [level,setLevel]=useState('ALL');const list=events.filter(e=>level==='ALL'||e.level===level);return <><PageTitle overline="AUDIT" title="Lịch sử hoạt động" text="Nhật ký tập trung phục vụ kiểm tra và bàn giao"><a className="btn secondary" href={`${API}/api/history.csv`}><Download/>Xuất CSV</a></PageTitle><div className="card"><div className="toolbar"><div className="segmented">{['ALL','INFO','WARNING','ERROR'].map(v=><button className={level===v?'selected':''} onClick={()=>setLevel(v)} key={v}>{v}</button>)}</div></div><div className="audit-list">{list.map(e=><div key={e.id}><i className={e.level.toLowerCase()}/><span><b>{e.mailbox}</b><small>Job #{e.job_id}{e.ticket?` · ${e.ticket}`:''}</small></span><p>{e.message}</p><time>{fmtDate(e.created_at)}</time></div>)}</div></div></>}
-function Workers({workers}){return <><PageTitle overline="HẠ TẦNG" title="VM workers" text="Theo dõi máy thực hiện export và heartbeat"/><div className="worker-grid">{workers.map(w=><article className="worker-panel" key={w.id}><div className="worker-panel-head"><span className="machine-icon"><Server/></span><StatusDot value={w.status}/></div><h2>{w.display_name}</h2><p>{w.machine_name||'Chưa khai báo hostname'}</p><dl><div><dt>Worker ID</dt><dd>{w.id}</dd></div><div><dt>Vai trò</dt><dd>{w.role}</dd></div><div><dt>Phiên bản</dt><dd>{w.version}</dd></div><div><dt>Heartbeat</dt><dd>{w.heartbeat_age_seconds}s trước</dd></div></dl><div className="worker-note">{w.detail}</div></article>)}</div></>}
-function StatusDot({value}){return <span className={`status-dot ${value==='ONLINE'?'online':'offline'}`}><i/>{value}</span>}
-function SystemSettings({system}){if(!system)return <div className="loading">Đang tải cấu hình...</div>;const checks=[['SQLite',system.database.ready,'Lưu job, sự kiện và artifact',system.database.path],['Outlook Classic',system.outlook.ready,'Export thủ công có giám sát','Không chạy Outlook trong Windows Service'],['Windows BITS',system.bits.ready,'Chuyển PST nền và resume','Receipt API đã sẵn sàng'],['Purview app-only',system.purview.ready,'Export không cần password user',system.purview.productionLocked?'Đang khóa bởi TEST MODE':'Cần đủ tenant, client và certificate']];return <><PageTitle overline="CẤU HÌNH" title="Sẵn sàng hệ thống" text="Kiểm tra từng thành phần trước khi chuyển sang pilot"/><div className="settings-layout"><div className="card readiness"><div className="card-title"><div><h2>Readiness checklist</h2><p>Trạng thái thực tế của backend</p></div></div>{checks.map(([t,ok,d,n])=><div className="check-row" key={t}><span className={ok?'ok':'pending'}>{ok?<Check/>:<Clock3/>}</span><div><b>{t}</b><p>{d}</p><small>{n}</small></div><strong>{ok?'Sẵn sàng':'Chưa cấu hình'}</strong></div>)}</div><div className="card security-panel"><ShieldCheck/><h2>Bảo mật xác thực</h2><p>Ứng dụng không có trường password và không lưu mật khẩu Microsoft 365.</p><ul><li>Certificate + RBAC cho app-only</li><li>OAuth tương tác nếu cần fallback</li><li>TEST MODE chặn Purview thật</li></ul><div className="mode-box"><span>Chế độ hiện tại</span><b>{system.testMode?'TEST MODE':'PRODUCTION'}</b></div></div></div></>}
-function PageTitle({overline,title,text,children}){return <div className="hero"><div><span className="overline">{overline}</span><h1>{title}</h1><p>{text}</p></div><div>{children}</div></div>}
-
-const nav=[['overview','Tổng quan',LayoutDashboard],['jobs','Công việc',ListTodo],['transfers','Chuyển PST',ArrowLeftRight],['history','Lịch sử',History],['workers','VM workers',MonitorCog],['settings','Cấu hình',Settings]]
-function App(){
-  const [view,setView]=useState('overview')
-  const [data,setData]=useState({jobs:[],events:[],workers:[],summary:{total:0,active:0,complete:0,failed:0},testMode:true})
-  const [system,setSystem]=useState(null),[loading,setLoading]=useState(true)
-  const [newJob,setNewJob]=useState(false),[selected,setSelected]=useState(null),[toast,setToast]=useState(null)
-  const notify=(message,type='success')=>{setToast({message,type});setTimeout(()=>setToast(null),3500)}
-  const load=async()=>{
-    setLoading(true)
-    try{
-      const [dashboard,status,events]=await Promise.all([request('/api/dashboard'),request('/api/system'),request('/api/events?limit=500')])
-      setData({...dashboard,events})
-      setSystem(status)
-    }catch(e){notify(e.message,'error')}finally{setLoading(false)}
+async function request(path, options) {
+  const response = await fetch(`${API}${path}`, options);
+  if (!response.ok) {
+    let message = "Thao tác thất bại";
+    try {
+      const body = await response.json();
+      message = body.detail || message;
+    } catch {}
+    throw new Error(message);
   }
-  useEffect(()=>{load();const timer=setInterval(load,5000);return()=>clearInterval(timer)},[])
-  const currentWorker=data.workers.find(w=>w.id==='vm-worker-01')||data.workers[0]
-  return <div className="shell">
-    <aside className="sidebar"><div className="logo"><span><Archive/></span><div><b>InterLOG</b><small>Mail Operations</small></div></div><nav>{nav.map(([id,label,Icon])=><button key={id} className={view===id?'selected':''} onClick={()=>setView(id)}><Icon/><span>{label}</span>{id==='jobs'&&data.summary.active>0&&<i>{data.summary.active}</i>}</button>)}</nav><div className="sidebar-worker"><div><StatusDot value={currentWorker?.status||'OFFLINE'}/><small>{currentWorker?.machine_name||'Chưa có worker'}</small></div><span>{currentWorker?.heartbeat_age_seconds??'—'}s</span></div><div className="sidebar-footer"><ShieldCheck/><span><b>{data.testMode?'TEST MODE':'PRODUCTION'}</b><small>Không lưu password user</small></span></div></aside>
-    <main className="workspace"><div className="topbar"><div className="breadcrumb">InterLOG <ChevronRight/> {nav.find(n=>n[0]===view)?.[1]}</div><div><span className={`sync-state ${loading?'syncing':''}`}><RefreshCw/> {loading?'Đang đồng bộ':'Đã cập nhật'}</span><button className="icon-button" onClick={load}><RefreshCw/></button></div></div>{data.testMode&&<div className="test-strip"><ShieldCheck/><span><b>TEST MODE</b> — chỉ dùng mailbox test; Purview production đang bị khóa.</span></div>}<div className="page">{view==='overview'&&<Overview data={data} onNew={()=>setNewJob(true)} onOpen={setSelected} setView={setView}/>} {view==='jobs'&&<Jobs jobs={data.jobs} onOpen={setSelected} onNew={()=>setNewJob(true)}/>} {view==='transfers'&&<Transfers jobs={data.jobs} onOpen={setSelected}/>} {view==='history'&&<HistoryView events={data.events}/>} {view==='workers'&&<Workers workers={data.workers}/>} {view==='settings'&&<SystemSettings system={system}/>}</div></main>
-    {newJob&&<NewJob workers={data.workers} onClose={()=>setNewJob(false)} onSaved={()=>{load();notify('Đã tạo yêu cầu backup')}}/>}{selected&&<JobDrawer jobId={selected} onClose={()=>setSelected(null)} onChanged={load} notify={notify}/>} {toast&&<div className={`toast ${toast.type}`}><span>{toast.type==='success'?<CheckCircle2/>:<CircleAlert/>}</span>{toast.message}</div>}
-  </div>
+  return response.json();
 }
 
-createRoot(document.getElementById('root')).render(<App/>)
+function Status({ value }) {
+  const tone =
+    value === "COMPLETE"
+      ? "success"
+      : value === "FAILED"
+        ? "danger"
+        : value === "CANCELLED"
+          ? "neutral"
+          : value === "WAITING_OPERATOR"
+            ? "warning"
+            : "info";
+  return (
+    <span className={`badge ${tone}`}>
+      <i />
+      {statusNames[value] || value}
+    </span>
+  );
+}
+function ScopeIcon({ scope }) {
+  return (
+    <span className="scope-icon">
+      {scope === "online_archive" ? <Archive /> : <Inbox />}
+    </span>
+  );
+}
+function Progress({ job, large = false }) {
+  return (
+    <div className={`progress-wrap ${large ? "large" : ""}`}>
+      <div className="progress-track">
+        <i style={{ width: `${job.progress}%` }} />
+      </div>
+      <b>{job.progress}%</b>
+    </div>
+  );
+}
+function Empty({
+  title = "Chưa có dữ liệu",
+  text = "Dữ liệu phù hợp sẽ xuất hiện tại đây.",
+}) {
+  return (
+    <div className="empty-state">
+      <FileArchive />
+      <strong>{title}</strong>
+      <span>{text}</span>
+    </div>
+  );
+}
+
+function NewJob({ workers, onClose, onSaved }) {
+  const d = new Date(Date.now() + 60000);
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+  const [form, setForm] = useState({
+    mailbox: "",
+    scope: "online_archive",
+    folder_name: "",
+    export_engine: "outlook_manual",
+    auth_mode: "interactive_oauth",
+    scheduled_at: d.toISOString().slice(0, 16),
+    destination: "D:\\MAIL BACKUP",
+    ticket: "",
+    requested_by: "",
+    assigned_worker: workers[0]?.id || "vm-worker-01",
+    note: "",
+  });
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const set = (key, value) => setForm({ ...form, [key]: value });
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await request("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...form,
+          scheduled_at: new Date(form.scheduled_at).toISOString(),
+        }),
+      });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="overlay">
+      <form className="dialog job-dialog" onSubmit={submit}>
+        <div className="dialog-title">
+          <div>
+            <span className="overline">YÊU CẦU BACKUP</span>
+            <h2>Tạo công việc mới</h2>
+            <p>Chọn chính xác nguồn dữ liệu trước khi lên lịch cho VM.</p>
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onClose}
+            aria-label="Đóng"
+          >
+            <X />
+          </button>
+        </div>
+        <div className="step-label">
+          <span>1</span>Thông tin yêu cầu
+        </div>
+        <div className="form-grid">
+          <label className="span-2">
+            Email cần backup
+            <input
+              required
+              type="email"
+              placeholder="mailbox-test@company.com"
+              value={form.mailbox}
+              onChange={(e) => set("mailbox", e.target.value)}
+            />
+          </label>
+          <label>
+            Mã ticket
+            <input
+              placeholder="INC-000123"
+              value={form.ticket}
+              onChange={(e) => set("ticket", e.target.value)}
+            />
+          </label>
+          <label>
+            Người yêu cầu
+            <input
+              placeholder="Tên user / phòng ban"
+              value={form.requested_by}
+              onChange={(e) => set("requested_by", e.target.value)}
+            />
+          </label>
+        </div>
+        <div className="step-label">
+          <span>2</span>Phạm vi và phương thức
+        </div>
+        <div className="scope-options">
+          {[
+            [
+              "online_archive",
+              "Online Archive",
+              "Chỉ dữ liệu trong archive online",
+            ],
+            ["primary", "Mailbox chính", "Inbox, Sent Items và các folder"],
+            ["folder", "Thư mục cụ thể", "Một folder và các folder con"],
+          ].map(([v, t, s]) => (
+            <button
+              type="button"
+              className={form.scope === v ? "selected" : ""}
+              onClick={() => set("scope", v)}
+              key={v}
+            >
+              <ScopeIcon scope={v} />
+              <b>{t}</b>
+              <small>{s}</small>
+              {form.scope === v && <Check />}
+            </button>
+          ))}
+        </div>
+        {form.scope === "folder" && (
+          <label className="single-field">
+            Đường dẫn thư mục
+            <input
+              required
+              placeholder="Ví dụ: Inbox/Projects/2026"
+              value={form.folder_name}
+              onChange={(e) => set("folder_name", e.target.value)}
+            />
+          </label>
+        )}
+        <div className="form-grid">
+          <label>
+            Quy trình export
+            <select
+              value={form.export_engine}
+              onChange={(e) => {
+                const v = e.target.value;
+                setForm({
+                  ...form,
+                  export_engine: v,
+                  scope: v === "graph_local" ? "primary" : form.scope,
+                  auth_mode:
+                    v === "outlook_manual" ? "interactive_oauth" : "app_only",
+                });
+              }}
+            >
+              <option value="outlook_manual">
+                Outlook Classic — IT thực hiện
+              </option>
+              <option value="graph_local">Graph local — mailbox chính</option>
+              <option value="purview">
+                Microsoft Purview — chưa kích hoạt
+              </option>
+            </select>
+          </label>
+          <label>
+            VM worker
+            <select
+              value={form.assigned_worker}
+              onChange={(e) => set("assigned_worker", e.target.value)}
+            >
+              {workers.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.display_name} · {w.status}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Thời gian bắt đầu
+            <input
+              required
+              type="datetime-local"
+              value={form.scheduled_at}
+              onChange={(e) => set("scheduled_at", e.target.value)}
+            />
+          </label>
+          <label>
+            Thư mục đích trên máy user
+            <input
+              required
+              value={form.destination}
+              onChange={(e) => set("destination", e.target.value)}
+            />
+          </label>
+          <label className="span-2">
+            Ghi chú
+            <textarea
+              rows="2"
+              value={form.note}
+              onChange={(e) => set("note", e.target.value)}
+            />
+          </label>
+        </div>
+        <div className="safe-callout">
+          <ShieldCheck />
+          <div>
+            <b>Không yêu cầu hoặc lưu mật khẩu user</b>
+            <span>
+              Outlook Classic là bước IT có giám sát. Purview production sẽ dùng
+              certificate và RBAC.
+            </span>
+          </div>
+        </div>
+        {error && <div className="error-callout">{error}</div>}
+        <div className="dialog-actions">
+          <button type="button" className="btn secondary" onClick={onClose}>
+            Hủy
+          </button>
+          <button className="btn primary" disabled={busy}>
+            <CalendarClock />
+            {busy ? "Đang tạo..." : "Lên lịch backup"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ReadyDialog({ job, onClose, onSaved }) {
+  const [path, setPath] = useState(
+      job.pst_path || `C:\\MailBackup\\${job.mailbox.replace("@", "_")}.pst`,
+    ),
+    [size, setSize] = useState(""),
+    [error, setError] = useState("");
+  const submit = async (e) => {
+    e.preventDefault();
+    try {
+      await request(`/api/jobs/${job.id}/operator-ready`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pst_path: path,
+          size_bytes: size ? Math.round(Number(size) * 1073741824) : 0,
+        }),
+      });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  return (
+    <div className="overlay">
+      <form className="dialog compact" onSubmit={submit}>
+        <div className="dialog-title">
+          <div>
+            <span className="overline">XÁC NHẬN EXPORT</span>
+            <h2>PST đã sẵn sàng</h2>
+            <p>Chỉ xác nhận sau khi Outlook export xong và đã đóng.</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose}>
+            <X />
+          </button>
+        </div>
+        <label className="single-field">
+          Đường dẫn PST trên VM
+          <input
+            required
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+          />
+        </label>
+        <label className="single-field">
+          Dung lượng gần đúng (GB, không bắt buộc)
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={size}
+            onChange={(e) => setSize(e.target.value)}
+          />
+        </label>
+        {error && <div className="error-callout">{error}</div>}
+        <div className="dialog-actions">
+          <button type="button" className="btn secondary" onClick={onClose}>
+            Quay lại
+          </button>
+          <button className="btn primary">
+            <CheckCircle2 />
+            Xác nhận PST
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function JobDrawer({ jobId, onClose, onChanged, notify }) {
+  const [data, setData] = useState(null),
+    [ready, setReady] = useState(false);
+  const load = async () => setData(await request(`/api/jobs/${jobId}`));
+  useEffect(() => {
+    load();
+  }, [jobId]);
+  const action = async (name) => {
+    try {
+      await request(`/api/jobs/${jobId}/${name}`, { method: "POST" });
+      await load();
+      onChanged();
+      notify(name === "retry" ? "Đã đưa job về hàng đợi" : "Đã hủy job");
+    } catch (e) {
+      notify(e.message, "error");
+    }
+  };
+  if (!data)
+    return (
+      <div className="drawer-overlay">
+        <section className="drawer">
+          <div className="loading">Đang tải...</div>
+        </section>
+      </div>
+    );
+  const j = data.job;
+  return (
+    <div
+      className="drawer-overlay"
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <section className="drawer">
+        <div className="drawer-title">
+          <div>
+            <span className="overline">
+              JOB #{String(j.id).padStart(4, "0")}
+            </span>
+            <h2>{j.mailbox}</h2>
+            <Status value={j.status} />
+          </div>
+          <button className="icon-button" onClick={onClose}>
+            <X />
+          </button>
+        </div>
+        <div className="drawer-progress">
+          <div>
+            <b>{j.progress}%</b>
+            <span>
+              {fmtBytes(j.bytes_done)} / {fmtBytes(j.bytes_total)}
+            </span>
+          </div>
+          <Progress job={j} large />
+        </div>
+        {j.error && (
+          <div className="error-callout icon">
+            <CircleAlert />
+            {j.error}
+          </div>
+        )}
+        <div className="metadata">
+          <div>
+            <span>Phạm vi</span>
+            <b>
+              {scopes[j.scope]}
+              {j.folder_name ? ` · ${j.folder_name}` : ""}
+            </b>
+          </div>
+          <div>
+            <span>Lịch chạy</span>
+            <b>{fmtDate(j.scheduled_at)}</b>
+          </div>
+          <div>
+            <span>Ticket</span>
+            <b>{j.ticket || "—"}</b>
+          </div>
+          <div>
+            <span>Người yêu cầu</span>
+            <b>{j.requested_by || "—"}</b>
+          </div>
+          <div>
+            <span>Worker</span>
+            <b>{j.assigned_worker}</b>
+          </div>
+          <div>
+            <span>Engine</span>
+            <b>{engineNames[j.export_engine] || j.export_engine}</b>
+          </div>
+          <div className="span-2">
+            <span>File PST / thư mục đích</span>
+            <b>{j.pst_path || j.destination}</b>
+          </div>
+        </div>
+        <div className="drawer-actions">
+          {j.status === "WAITING_OPERATOR" && (
+            <button className="btn primary" onClick={() => setReady(true)}>
+              <CheckCircle2 />
+              PST đã export xong
+            </button>
+          )}
+          {!["COMPLETE", "CANCELLED"].includes(j.status) && (
+            <button className="btn secondary" onClick={() => action("retry")}>
+              <RotateCcw />
+              Thử lại / tiếp tục
+            </button>
+          )}
+          {!["COMPLETE", "CANCELLED"].includes(j.status) && (
+            <button className="btn danger" onClick={() => action("cancel")}>
+              <XCircle />
+              Hủy job
+            </button>
+          )}
+        </div>
+        <div className="section-heading">
+          <h3>Lịch sử xử lý</h3>
+          <span>{data.events.length} sự kiện</span>
+        </div>
+        <div className="timeline">
+          {data.events.map((e) => (
+            <div className="timeline-item" key={e.id}>
+              <i className={e.level.toLowerCase()} />
+              <div>
+                <p>{e.message}</p>
+                <span>
+                  {fmtDate(e.created_at)} · {e.level}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {ready && (
+          <ReadyDialog
+            job={j}
+            onClose={() => setReady(false)}
+            onSaved={async () => {
+              await load();
+              onChanged();
+              notify("Đã xác nhận PST sẵn sàng");
+            }}
+          />
+        )}
+      </section>
+    </div>
+  );
+}
+
+function JobTable({ jobs, onOpen, emptyText }) {
+  if (!jobs.length) return <Empty title={emptyText || "Chưa có job"} />;
+  return (
+    <div className="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Mailbox / phạm vi</th>
+            <th>Lịch chạy</th>
+            <th>Trạng thái</th>
+            <th>Tiến độ</th>
+            <th>Worker</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {jobs.map((j) => (
+            <tr key={j.id} onClick={() => onOpen(j.id)}>
+              <td>
+                <div className="mailbox-cell">
+                  <ScopeIcon scope={j.scope} />
+                  <div>
+                    <b>{j.mailbox}</b>
+                    <span>
+                      {scopes[j.scope]}
+                      {j.folder_name ? ` · ${j.folder_name}` : ""}
+                      {j.ticket ? ` · ${j.ticket}` : ""}
+                    </span>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <b>{fmtDate(j.scheduled_at)}</b>
+                <small>#{String(j.id).padStart(4, "0")}</small>
+              </td>
+              <td>
+                <Status value={j.status} />
+              </td>
+              <td>
+                <Progress job={j} />
+              </td>
+              <td>
+                <span className="worker-chip">{j.assigned_worker}</span>
+              </td>
+              <td>
+                <ChevronRight className="chevron" />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function Overview({ data, onNew, onOpen, setView }) {
+  const cards = [
+    ["Tổng yêu cầu", data.summary.total, Database, "slate"],
+    ["Đang xử lý", data.summary.active, Clock3, "blue"],
+    ["Hoàn tất", data.summary.complete, CheckCircle2, "green"],
+    ["Cần xử lý", data.summary.failed, CircleAlert, "red"],
+  ];
+  return (
+    <>
+      <div className="hero">
+        <div>
+          <span className="overline">MAIL OPERATIONS CENTER</span>
+          <h1>Tổng quan backup</h1>
+          <p>Theo dõi từ yêu cầu export đến lúc PST được bàn giao an toàn.</p>
+        </div>
+        <button className="btn primary" onClick={onNew}>
+          <Plus />
+          Tạo yêu cầu
+        </button>
+      </div>
+      <section className="stat-grid">
+        {cards.map(([t, v, I, c]) => (
+          <article className="stat-card" key={t}>
+            <span className={`stat-icon ${c}`}>
+              <I />
+            </span>
+            <div>
+              <small>{t}</small>
+              <b>{v}</b>
+              <p>Toàn bộ dữ liệu SQLite</p>
+            </div>
+          </article>
+        ))}
+      </section>
+      <section className="overview-grid">
+        <div className="card">
+          <div className="card-title">
+            <div>
+              <h2>Công việc gần đây</h2>
+              <p>Các job mới nhất trong hệ thống</p>
+            </div>
+            <button className="link-button" onClick={() => setView("jobs")}>
+              Xem tất cả <ChevronRight />
+            </button>
+          </div>
+          <JobTable jobs={data.jobs.slice(0, 7)} onOpen={onOpen} />
+        </div>
+        <div className="card activity-card">
+          <div className="card-title">
+            <div>
+              <h2>Hoạt động mới</h2>
+              <p>Audit log gần nhất</p>
+            </div>
+          </div>
+          <div className="timeline">
+            {data.events.slice(0, 9).map((e) => (
+              <div className="timeline-item" key={e.id}>
+                <i className={e.level.toLowerCase()} />
+                <div>
+                  <b>{e.mailbox}</b>
+                  <p>{e.message}</p>
+                  <span>{fmtDate(e.created_at)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    </>
+  );
+}
+
+function Jobs({ jobs, onOpen, onNew }) {
+  const [query, setQuery] = useState(""),
+    [filter, setFilter] = useState("ALL");
+  const filtered = useMemo(
+    () =>
+      jobs.filter((j) => {
+        const text = `${j.mailbox} ${j.ticket} ${j.requested_by}`
+          .toLowerCase()
+          .includes(query.toLowerCase());
+        const state =
+          filter === "ALL" ||
+          (filter === "ACTIVE"
+            ? !finalStates.includes(j.status)
+            : j.status === filter);
+        return text && state;
+      }),
+    [jobs, query, filter],
+  );
+  return (
+    <>
+      <PageTitle
+        overline="VẬN HÀNH"
+        title="Công việc backup"
+        text="Quản lý toàn bộ yêu cầu và vòng đời PST"
+      >
+        <button className="btn primary" onClick={onNew}>
+          <Plus />
+          Tạo yêu cầu
+        </button>
+      </PageTitle>
+      <div className="card">
+        <Toolbar
+          query={query}
+          setQuery={setQuery}
+          filter={filter}
+          setFilter={setFilter}
+        />
+        <JobTable
+          jobs={filtered}
+          onOpen={onOpen}
+          emptyText="Không có job phù hợp"
+        />
+      </div>
+    </>
+  );
+}
+function Toolbar({ query, setQuery, filter, setFilter }) {
+  const options = [
+    ["ALL", "Tất cả"],
+    ["ACTIVE", "Đang xử lý"],
+    ["WAITING_OPERATOR", "Chờ IT"],
+    ["COMPLETE", "Hoàn tất"],
+    ["FAILED", "Lỗi"],
+  ];
+  return (
+    <div className="toolbar">
+      <div className="search-box">
+        <Search />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Tìm email, ticket, người yêu cầu..."
+        />
+      </div>
+      <div className="segmented">
+        {options.map(([v, l]) => (
+          <button
+            className={filter === v ? "selected" : ""}
+            onClick={() => setFilter(v)}
+            key={v}
+          >
+            {l}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+function Transfers({ jobs, onOpen }) {
+  const transfers = jobs.filter(
+    (j) =>
+      [
+        "PST_READY",
+        "WAITING_TRANSFER",
+        "TRANSFERRING",
+        "VERIFYING",
+        "COMPLETE",
+        "FAILED",
+      ].includes(j.status) && j.pst_path,
+  );
+  return (
+    <>
+      <PageTitle
+        overline="BITS TRANSFER"
+        title="Chuyển PST"
+        text="Theo dõi file lớn, lỗi mạng, resume và xác minh dữ liệu"
+      />
+      <div className="card transfer-list">
+        {transfers.length ? (
+          transfers.map((j) => (
+            <button key={j.id} onClick={() => onOpen(j.id)}>
+              <span className="file-icon">
+                <HardDrive />
+              </span>
+              <span className="transfer-main">
+                <b>{j.mailbox}</b>
+                <small>{j.pst_path}</small>
+                <Progress job={j} />
+              </span>
+              <span className="transfer-size">
+                <b>{fmtBytes(j.bytes_done)}</b>
+                <small>trên {fmtBytes(j.bytes_total)}</small>
+              </span>
+              <Status value={j.status} />
+              <ChevronRight />
+            </button>
+          ))
+        ) : (
+          <Empty
+            title="Chưa có PST đang chuyển"
+            text="Xác nhận export xong trong chi tiết job để bắt đầu chặng transfer."
+          />
+        )}
+      </div>
+    </>
+  );
+}
+function HistoryView({ events }) {
+  const [level, setLevel] = useState("ALL");
+  const list = events.filter((e) => level === "ALL" || e.level === level);
+  return (
+    <>
+      <PageTitle
+        overline="AUDIT"
+        title="Lịch sử hoạt động"
+        text="Nhật ký tập trung phục vụ kiểm tra và bàn giao"
+      >
+        <a className="btn secondary" href={`${API}/api/history.csv`}>
+          <Download />
+          Xuất CSV
+        </a>
+      </PageTitle>
+      <div className="card">
+        <div className="toolbar">
+          <div className="segmented">
+            {["ALL", "INFO", "WARNING", "ERROR"].map((v) => (
+              <button
+                className={level === v ? "selected" : ""}
+                onClick={() => setLevel(v)}
+                key={v}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="audit-list">
+          {list.map((e) => (
+            <div key={e.id}>
+              <i className={e.level.toLowerCase()} />
+              <span>
+                <b>{e.mailbox}</b>
+                <small>
+                  Job #{e.job_id}
+                  {e.ticket ? ` · ${e.ticket}` : ""}
+                </small>
+              </span>
+              <p>{e.message}</p>
+              <time>{fmtDate(e.created_at)}</time>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+function Workers({ workers }) {
+  return (
+    <>
+      <PageTitle
+        overline="HẠ TẦNG"
+        title="VM workers"
+        text="Theo dõi máy thực hiện export và heartbeat"
+      />
+      <div className="worker-grid">
+        {workers.map((w) => (
+          <article className="worker-panel" key={w.id}>
+            <div className="worker-panel-head">
+              <span className="machine-icon">
+                <Server />
+              </span>
+              <StatusDot value={w.status} />
+            </div>
+            <h2>{w.display_name}</h2>
+            <p>{w.machine_name || "Chưa khai báo hostname"}</p>
+            <dl>
+              <div>
+                <dt>Worker ID</dt>
+                <dd>{w.id}</dd>
+              </div>
+              <div>
+                <dt>Vai trò</dt>
+                <dd>{w.role}</dd>
+              </div>
+              <div>
+                <dt>Phiên bản</dt>
+                <dd>{w.version}</dd>
+              </div>
+              <div>
+                <dt>Heartbeat</dt>
+                <dd>{w.heartbeat_age_seconds}s trước</dd>
+              </div>
+            </dl>
+            <div className="worker-note">{w.detail}</div>
+          </article>
+        ))}
+      </div>
+    </>
+  );
+}
+function StatusDot({ value }) {
+  return (
+    <span className={`status-dot ${value === "ONLINE" ? "online" : "offline"}`}>
+      <i />
+      {value}
+    </span>
+  );
+}
+function SystemSettings({ system }) {
+  if (!system) return <div className="loading">Đang tải cấu hình...</div>;
+  const checks = [
+    [
+      "SQLite",
+      system.database.ready,
+      "Lưu job, sự kiện và artifact",
+      system.database.path,
+    ],
+    [
+      "Outlook Classic",
+      system.outlook.ready,
+      "Export thủ công có giám sát",
+      "Không chạy Outlook trong Windows Service",
+    ],
+    [
+      "Windows BITS",
+      system.bits.ready,
+      "Chuyển PST nền và resume",
+      "Receipt API đã sẵn sàng",
+    ],
+    [
+      "Purview app-only",
+      system.purview.ready,
+      "Export không cần password user",
+      system.purview.productionLocked
+        ? "Đang khóa bởi TEST MODE"
+        : "Cần đủ tenant, client và certificate",
+    ],
+  ];
+  return (
+    <>
+      <PageTitle
+        overline="CẤU HÌNH"
+        title="Sẵn sàng hệ thống"
+        text="Kiểm tra từng thành phần trước khi chuyển sang pilot"
+      />
+      <div className="settings-layout">
+        <div className="card readiness">
+          <div className="card-title">
+            <div>
+              <h2>Readiness checklist</h2>
+              <p>Trạng thái thực tế của backend</p>
+            </div>
+          </div>
+          {checks.map(([t, ok, d, n]) => (
+            <div className="check-row" key={t}>
+              <span className={ok ? "ok" : "pending"}>
+                {ok ? <Check /> : <Clock3 />}
+              </span>
+              <div>
+                <b>{t}</b>
+                <p>{d}</p>
+                <small>{n}</small>
+              </div>
+              <strong>{ok ? "Sẵn sàng" : "Chưa cấu hình"}</strong>
+            </div>
+          ))}
+        </div>
+        <div className="card security-panel">
+          <ShieldCheck />
+          <h2>Bảo mật xác thực</h2>
+          <p>
+            Ứng dụng không có trường password và không lưu mật khẩu Microsoft
+            365.
+          </p>
+          <ul>
+            <li>Certificate + RBAC cho app-only</li>
+            <li>OAuth tương tác nếu cần fallback</li>
+            <li>TEST MODE chặn Purview thật</li>
+          </ul>
+          <div className="mode-box">
+            <span>Chế độ hiện tại</span>
+            <b>{system.testMode ? "TEST MODE" : "PRODUCTION"}</b>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+function PageTitle({ overline, title, text, children }) {
+  return (
+    <div className="hero">
+      <div>
+        <span className="overline">{overline}</span>
+        <h1>{title}</h1>
+        <p>{text}</p>
+      </div>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+const nav = [
+  ["overview", "Tổng quan", LayoutDashboard],
+  ["jobs", "Công việc", ListTodo],
+  ["transfers", "Chuyển PST", ArrowLeftRight],
+  ["history", "Lịch sử", History],
+  ["workers", "VM workers", MonitorCog],
+  ["settings", "Cấu hình", Settings],
+];
+function App() {
+  const [view, setView] = useState("overview");
+  const [data, setData] = useState({
+    jobs: [],
+    events: [],
+    workers: [],
+    summary: { total: 0, active: 0, complete: 0, failed: 0 },
+    testMode: true,
+  });
+  const [system, setSystem] = useState(null),
+    [loading, setLoading] = useState(true);
+  const [newJob, setNewJob] = useState(false),
+    [selected, setSelected] = useState(null),
+    [toast, setToast] = useState(null);
+  const notify = (message, type = "success") => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3500);
+  };
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [dashboard, status, events] = await Promise.all([
+        request("/api/dashboard"),
+        request("/api/system"),
+        request("/api/events?limit=500"),
+      ]);
+      setData({ ...dashboard, events });
+      setSystem(status);
+    } catch (e) {
+      notify(e.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 5000);
+    return () => clearInterval(timer);
+  }, []);
+  const currentWorker =
+    data.workers.find((w) => w.id === "vm-worker-01") || data.workers[0];
+  return (
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="logo">
+          <span>
+            <Archive />
+          </span>
+          <div>
+            <b>InterLOG</b>
+            <small>Mail Operations</small>
+          </div>
+        </div>
+        <nav>
+          {nav.map(([id, label, Icon]) => (
+            <button
+              key={id}
+              className={view === id ? "selected" : ""}
+              onClick={() => setView(id)}
+            >
+              <Icon />
+              <span>{label}</span>
+              {id === "jobs" && data.summary.active > 0 && (
+                <i>{data.summary.active}</i>
+              )}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-worker">
+          <div>
+            <StatusDot value={currentWorker?.status || "OFFLINE"} />
+            <small>{currentWorker?.machine_name || "Chưa có worker"}</small>
+          </div>
+          <span>{currentWorker?.heartbeat_age_seconds ?? "—"}s</span>
+        </div>
+        <div className="sidebar-footer">
+          <ShieldCheck />
+          <span>
+            <b>{data.testMode ? "TEST MODE" : "PRODUCTION"}</b>
+            <small>Không lưu password user</small>
+          </span>
+        </div>
+      </aside>
+      <main className="workspace">
+        <div className="topbar">
+          <div className="breadcrumb">
+            InterLOG <ChevronRight /> {nav.find((n) => n[0] === view)?.[1]}
+          </div>
+          <div>
+            <span className={`sync-state ${loading ? "syncing" : ""}`}>
+              <RefreshCw /> {loading ? "Đang đồng bộ" : "Đã cập nhật"}
+            </span>
+            <button className="icon-button" onClick={load}>
+              <RefreshCw />
+            </button>
+          </div>
+        </div>
+        {data.testMode && (
+          <div className="test-strip">
+            <ShieldCheck />
+            <span>
+              <b>TEST MODE</b> — chỉ dùng mailbox test; Purview production đang
+              bị khóa.
+            </span>
+          </div>
+        )}
+        <div className="page">
+          {view === "overview" && (
+            <Overview
+              data={data}
+              onNew={() => setNewJob(true)}
+              onOpen={setSelected}
+              setView={setView}
+            />
+          )}{" "}
+          {view === "jobs" && (
+            <Jobs
+              jobs={data.jobs}
+              onOpen={setSelected}
+              onNew={() => setNewJob(true)}
+            />
+          )}{" "}
+          {view === "transfers" && (
+            <Transfers jobs={data.jobs} onOpen={setSelected} />
+          )}{" "}
+          {view === "history" && <HistoryView events={data.events} />}{" "}
+          {view === "workers" && <Workers workers={data.workers} />}{" "}
+          {view === "settings" && <SystemSettings system={system} />}
+        </div>
+      </main>
+      {newJob && (
+        <NewJob
+          workers={data.workers}
+          onClose={() => setNewJob(false)}
+          onSaved={() => {
+            load();
+            notify("Đã tạo yêu cầu backup");
+          }}
+        />
+      )}
+      {selected && (
+        <JobDrawer
+          jobId={selected}
+          onClose={() => setSelected(null)}
+          onChanged={load}
+          notify={notify}
+        />
+      )}{" "}
+      {toast && (
+        <div className={`toast ${toast.type}`}>
+          <span>
+            {toast.type === "success" ? <CheckCircle2 /> : <CircleAlert />}
+          </span>
+          {toast.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")).render(<App />);

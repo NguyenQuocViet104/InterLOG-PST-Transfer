@@ -122,7 +122,7 @@ class JobCreate(BaseModel):
     mailbox: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     scope: Literal["primary", "online_archive", "folder"]
     folder_name: str | None = None
-    export_engine: Literal["purview", "outlook_manual"] = "outlook_manual"
+    export_engine: Literal["purview", "outlook_manual", "graph_local"] = "outlook_manual"
     auth_mode: Literal["app_only", "interactive_oauth"] = "interactive_oauth"
     scheduled_at: datetime
     destination: str = Field(min_length=2, max_length=500)
@@ -135,6 +135,11 @@ class JobCreate(BaseModel):
 class OperatorReady(BaseModel):
     pst_path: str = Field(min_length=2, max_length=1000)
     size_bytes: int = Field(default=0, ge=0)
+
+
+class LocalComplete(BaseModel):
+    pst_path: str = Field(min_length=2, max_length=1000)
+    manifest_path: str | None = Field(default=None, max_length=1000)
 
 
 class WorkerHeartbeat(BaseModel):
@@ -177,6 +182,11 @@ async def demo_worker() -> None:
                         db.execute("UPDATE jobs SET status='WAITING_OPERATOR',progress=10,updated_at=? WHERE id=?", (now(), row["id"]))
                         add_event(db, row["id"], "Chờ IT export đúng dữ liệu bằng Outlook Classic và xác nhận PST đã sẵn sàng", "WARNING")
                     continue
+                if row["export_engine"] == "graph_local":
+                    if current == "SCHEDULED":
+                        db.execute("UPDATE jobs SET status='WAITING_GRAPH',progress=10,updated_at=? WHERE id=?", (now(), row["id"]))
+                        add_event(db, row["id"], "Chờ Graph local worker đồng bộ mailbox và đóng PST", "WARNING")
+                    continue
                 index = PURVIEW_FLOW.index(current) if current in PURVIEW_FLOW else 0
                 next_status = PURVIEW_FLOW[min(index + 1, len(PURVIEW_FLOW) - 1)]
                 total = TEST_PST_SIZE if next_status in {"PST_READY", "WAITING_TRANSFER", "TRANSFERRING", "VERIFYING", "COMPLETE"} else row["bytes_total"]
@@ -194,13 +204,13 @@ async def lifespan(_: FastAPI):
     task.cancel()
 
 
-app = FastAPI(title="InterLOG Mail Operations", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="InterLOG Mail Operations", version="0.3.1", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.3.0", "testMode": TEST_MODE, "database": str(DB_PATH)}
+    return {"status": "ok", "version": "0.3.1", "testMode": TEST_MODE, "database": str(DB_PATH)}
 
 
 @app.get("/api/dashboard")
@@ -282,6 +292,8 @@ def create_job(payload: JobCreate) -> dict:
         raise HTTPException(422, "Phải nhập tên thư mục khi chọn phạm vi folder")
     if payload.export_engine == "purview" and payload.auth_mode != "app_only":
         raise HTTPException(422, "Purview worker phải dùng app-only; không nhận mật khẩu user")
+    if payload.export_engine == "graph_local" and payload.auth_mode != "app_only":
+        raise HTTPException(422, "Graph local phải dùng app-only/RBAC")
     created = now()
     with connect() as db:
         cursor = db.execute("""INSERT INTO jobs(mailbox,scope,folder_name,export_engine,auth_mode,scheduled_at,destination,status,progress,note,test_mode,created_at,updated_at,ticket,requested_by,assigned_worker,pst_path,error)
@@ -322,6 +334,29 @@ def operator_ready(job_id: int, payload: OperatorReady) -> dict:
     return job_detail(job_id)
 
 
+@app.post("/api/jobs/{job_id}/complete-local")
+def complete_local(job_id: int, payload: LocalComplete) -> dict:
+    pst_path = Path(payload.pst_path).resolve()
+    if not pst_path.is_file() or pst_path.suffix.lower() != ".pst":
+        raise HTTPException(422, "Không tìm thấy file PST local hợp lệ")
+    manifest_path = Path(payload.manifest_path).resolve() if payload.manifest_path else None
+    if manifest_path and not manifest_path.is_file():
+        raise HTTPException(422, "Không tìm thấy manifest PST")
+    with connect() as db:
+        row = require_job(db, job_id)
+        if row["export_engine"] != "graph_local":
+            raise HTTPException(409, "Chỉ job Graph local mới nhận PST local")
+        timestamp = now()
+        size = pst_path.stat().st_size
+        db.execute("UPDATE jobs SET status='COMPLETE',progress=100,pst_path=?,bytes_total=?,bytes_done=?,error='',updated_at=? WHERE id=?", (str(pst_path), size, size, timestamp, job_id))
+        db.execute("INSERT INTO artifacts(job_id,kind,path,size_bytes,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (job_id, "PST_LOCAL", str(pst_path), size, "VERIFIED", timestamp, timestamp))
+        if manifest_path:
+            db.execute("INSERT INTO artifacts(job_id,kind,path,size_bytes,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (job_id, "PST_MANIFEST", str(manifest_path), manifest_path.stat().st_size, "VERIFIED", timestamp, timestamp))
+        add_event(db, job_id, f"Graph local backup hoàn tất và đã đăng ký PST: {pst_path}")
+        db.commit()
+    return job_detail(job_id)
+
+
 @app.post("/api/jobs/{job_id}/receipt")
 def ingest_receipt(job_id: int, receipt: ReceiptPayload) -> dict:
     status = receipt.status.upper()
@@ -346,7 +381,10 @@ def retry_job(job_id: int) -> dict:
         row = require_job(db, job_id)
         if row["status"] == "COMPLETE":
             raise HTTPException(409, "Job đã hoàn tất")
-        target = "WAITING_OPERATOR" if row["export_engine"] == "outlook_manual" and not row["pst_path"] else "WAITING_TRANSFER"
+        if row["export_engine"] == "graph_local":
+            target = "WAITING_GRAPH"
+        else:
+            target = "WAITING_OPERATOR" if row["export_engine"] == "outlook_manual" and not row["pst_path"] else "WAITING_TRANSFER"
         db.execute("UPDATE jobs SET status=?,error='',updated_at=? WHERE id=?", (target, now(), job_id))
         add_event(db, job_id, "IT yêu cầu thử lại/tiếp tục job", "WARNING")
         db.commit()
