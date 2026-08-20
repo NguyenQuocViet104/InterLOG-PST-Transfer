@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,11 +19,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "dashboard.db"
 TEST_MODE = os.getenv("INTERLOG_TEST_MODE", "1") != "0"
-
-STATUSES = [
-    "SCHEDULED", "WAITING_AUTH", "EXPORTING", "PST_READY",
-    "TRANSFERRING", "VERIFYING", "COMPLETE",
-]
+FINAL_STATUSES = {"COMPLETE", "FAILED", "CANCELLED"}
+TEST_PST_SIZE = 51_028_116_480
+PURVIEW_FLOW = ["SCHEDULED", "EXPORTING", "PST_READY", "WAITING_TRANSFER", "TRANSFERRING", "VERIFYING", "COMPLETE"]
+PROGRESS = {"SCHEDULED": 0, "WAITING_OPERATOR": 10, "EXPORTING": 25, "PST_READY": 50, "WAITING_TRANSFER": 55, "TRANSFERRING": 75, "VERIFYING": 95, "COMPLETE": 100}
 
 
 def now() -> str:
@@ -31,7 +30,6 @@ def now() -> str:
 
 
 def parse_timestamp(value: str) -> datetime:
-    # PowerShell/.NET can emit seven fractional digits while Python accepts six.
     normalized = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
     result = datetime.fromisoformat(normalized)
     return result.replace(tzinfo=timezone.utc) if result.tzinfo is None else result
@@ -48,60 +46,103 @@ def connect() -> sqlite3.Connection:
 
 def init_db() -> None:
     with connect() as db:
-        db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS jobs (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              mailbox TEXT NOT NULL,
-              scope TEXT NOT NULL,
-              folder_name TEXT,
-              export_engine TEXT NOT NULL,
-              auth_mode TEXT NOT NULL,
-              scheduled_at TEXT NOT NULL,
-              destination TEXT NOT NULL,
-              status TEXT NOT NULL,
-              progress INTEGER NOT NULL DEFAULT 0,
-              bytes_total INTEGER NOT NULL DEFAULT 0,
-              bytes_done INTEGER NOT NULL DEFAULT 0,
-              note TEXT NOT NULL DEFAULT '',
-              test_mode INTEGER NOT NULL DEFAULT 1,
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS events (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-              level TEXT NOT NULL,
-              message TEXT NOT NULL,
-              created_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS ix_events_job_id ON events(job_id, id DESC);
-            """
-        )
+        db.executescript("""
+        CREATE TABLE IF NOT EXISTS jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, mailbox TEXT NOT NULL, scope TEXT NOT NULL,
+          folder_name TEXT, export_engine TEXT NOT NULL, auth_mode TEXT NOT NULL,
+          scheduled_at TEXT NOT NULL, destination TEXT NOT NULL, status TEXT NOT NULL,
+          progress INTEGER NOT NULL DEFAULT 0, bytes_total INTEGER NOT NULL DEFAULT 0,
+          bytes_done INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '',
+          test_mode INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+          level TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS workers (
+          id TEXT PRIMARY KEY, display_name TEXT NOT NULL, machine_name TEXT NOT NULL,
+          role TEXT NOT NULL, status TEXT NOT NULL, version TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL, detail TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS artifacts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL, path TEXT NOT NULL, size_bytes INTEGER NOT NULL DEFAULT 0,
+          sha256 TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_events_job_id ON events(job_id,id DESC);
+        CREATE INDEX IF NOT EXISTS ix_artifacts_job_id ON artifacts(job_id,id DESC);
+        """)
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
+        for name, definition in {
+            "ticket": "TEXT NOT NULL DEFAULT ''", "requested_by": "TEXT NOT NULL DEFAULT ''",
+            "assigned_worker": "TEXT NOT NULL DEFAULT 'vm-worker-01'", "pst_path": "TEXT NOT NULL DEFAULT ''",
+            "error": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            if name not in columns:
+                db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+        db.execute("""INSERT OR IGNORE INTO workers(id,display_name,machine_name,role,status,version,last_seen_at,detail)
+          VALUES('vm-worker-01','VM Export Worker','TEST-VM','export','OFFLINE','0.2.0',?,'Chưa kết nối agent thật')""", (now(),))
+        db.commit()
 
 
-def row_dict(row: sqlite3.Row) -> dict:
-    result = dict(row)
-    result["test_mode"] = bool(result["test_mode"])
+def row_dict(row: sqlite3.Row | None) -> dict:
+    result = dict(row) if row else {}
+    if "test_mode" in result:
+        result["test_mode"] = bool(result["test_mode"])
     return result
 
 
 def add_event(db: sqlite3.Connection, job_id: int, message: str, level: str = "INFO") -> None:
-    db.execute(
-        "INSERT INTO events(job_id, level, message, created_at) VALUES(?,?,?,?)",
-        (job_id, level, message, now()),
-    )
+    db.execute("INSERT INTO events(job_id,level,message,created_at) VALUES(?,?,?,?)", (job_id, level, message, now()))
+
+
+def require_job(db: sqlite3.Connection, job_id: int) -> sqlite3.Row:
+    row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Không tìm thấy job")
+    return row
 
 
 class JobCreate(BaseModel):
     mailbox: str = Field(pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     scope: Literal["primary", "online_archive", "folder"]
     folder_name: str | None = None
-    export_engine: Literal["purview", "outlook_manual"] = "purview"
-    auth_mode: Literal["app_only", "interactive_oauth"] = "app_only"
+    export_engine: Literal["purview", "outlook_manual"] = "outlook_manual"
+    auth_mode: Literal["app_only", "interactive_oauth"] = "interactive_oauth"
     scheduled_at: datetime
     destination: str = Field(min_length=2, max_length=500)
+    ticket: str = Field(default="", max_length=100)
+    requested_by: str = Field(default="", max_length=200)
+    assigned_worker: str = Field(default="vm-worker-01", max_length=100)
     note: str = Field(default="", max_length=1000)
+
+
+class OperatorReady(BaseModel):
+    pst_path: str = Field(min_length=2, max_length=1000)
+    size_bytes: int = Field(default=0, ge=0)
+
+
+class WorkerHeartbeat(BaseModel):
+    id: str = Field(min_length=2, max_length=100)
+    display_name: str = "VM Worker"
+    machine_name: str = ""
+    role: str = "export"
+    status: Literal["ONLINE", "BUSY", "OFFLINE", "ERROR"] = "ONLINE"
+    version: str = "0.2.0"
+    detail: str = ""
+
+
+class ReceiptPayload(BaseModel):
+    status: str
+    sourcePath: str | None = None
+    destinationPath: str | None = None
+    expectedBytes: int | None = None
+    bytesTransferred: int | None = None
+    bytesTotal: int | None = None
+    sourceSha256: str | None = None
+    destinationSha256: str | None = None
+    errorDescription: str | None = None
+    error: str | None = None
 
 
 async def demo_worker() -> None:
@@ -110,25 +151,22 @@ async def demo_worker() -> None:
         if not TEST_MODE:
             continue
         with connect() as db:
-            rows = db.execute(
-                "SELECT * FROM jobs WHERE status NOT IN ('COMPLETE','FAILED','CANCELLED') ORDER BY id"
-            ).fetchall()
+            db.execute("UPDATE workers SET status='ONLINE',last_seen_at=?,detail='Dashboard demo worker' WHERE id='vm-worker-01'", (now(),))
+            rows = db.execute("SELECT * FROM jobs WHERE status NOT IN ('COMPLETE','FAILED','CANCELLED') ORDER BY id").fetchall()
             for row in rows:
-                scheduled = parse_timestamp(row["scheduled_at"])
-                if scheduled > datetime.now(timezone.utc):
+                if parse_timestamp(row["scheduled_at"]) > datetime.now(timezone.utc):
                     continue
                 current = row["status"]
-                index = STATUSES.index(current) if current in STATUSES else 0
-                next_status = STATUSES[min(index + 1, len(STATUSES) - 1)]
-                progress_map = {
-                    "WAITING_AUTH": 5, "EXPORTING": 28, "PST_READY": 55,
-                    "TRANSFERRING": 78, "VERIFYING": 94, "COMPLETE": 100,
-                }
-                progress = progress_map.get(next_status, row["progress"])
-                db.execute(
-                    "UPDATE jobs SET status=?, progress=?, updated_at=? WHERE id=?",
-                    (next_status, progress, now(), row["id"]),
-                )
+                if row["export_engine"] == "outlook_manual":
+                    if current == "SCHEDULED":
+                        db.execute("UPDATE jobs SET status='WAITING_OPERATOR',progress=10,updated_at=? WHERE id=?", (now(), row["id"]))
+                        add_event(db, row["id"], "Chờ IT export đúng dữ liệu bằng Outlook Classic và xác nhận PST đã sẵn sàng", "WARNING")
+                    continue
+                index = PURVIEW_FLOW.index(current) if current in PURVIEW_FLOW else 0
+                next_status = PURVIEW_FLOW[min(index + 1, len(PURVIEW_FLOW) - 1)]
+                total = TEST_PST_SIZE if next_status in {"PST_READY", "WAITING_TRANSFER", "TRANSFERRING", "VERIFYING", "COMPLETE"} else row["bytes_total"]
+                done = total if next_status in {"VERIFYING", "COMPLETE"} else (total * PROGRESS.get(next_status, 0) // 100 if total else 0)
+                db.execute("UPDATE jobs SET status=?,progress=?,bytes_total=?,bytes_done=?,updated_at=? WHERE id=?", (next_status, PROGRESS.get(next_status, row["progress"]), total, done, now(), row["id"]))
                 add_event(db, row["id"], f"TEST MODE: chuyển trạng thái sang {next_status}")
             db.commit()
 
@@ -141,94 +179,141 @@ async def lifespan(_: FastAPI):
     task.cancel()
 
 
-app = FastAPI(title="InterLOG Mail Operations", version="0.1.0", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="InterLOG Mail Operations", version="0.2.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "testMode": TEST_MODE, "database": str(DB_PATH)}
+    return {"status": "ok", "version": "0.2.0", "testMode": TEST_MODE, "database": str(DB_PATH)}
 
 
 @app.get("/api/dashboard")
 def dashboard() -> dict:
     with connect() as db:
-        jobs = [row_dict(row) for row in db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 50")]
-        counts = {row["status"]: row["count"] for row in db.execute(
-            "SELECT status, COUNT(*) AS count FROM jobs GROUP BY status"
-        )}
-        events = [dict(row) for row in db.execute(
-            "SELECT events.*, jobs.mailbox FROM events JOIN jobs ON jobs.id=events.job_id ORDER BY events.id DESC LIMIT 12"
-        )]
-    active = sum(value for key, value in counts.items() if key not in {"COMPLETE", "FAILED", "CANCELLED"})
-    return {
-        "jobs": jobs,
-        "events": events,
-        "summary": {
-            "total": sum(counts.values()),
-            "active": active,
-            "complete": counts.get("COMPLETE", 0),
-            "failed": counts.get("FAILED", 0),
-        },
-        "testMode": TEST_MODE,
-    }
+        jobs = [row_dict(row) for row in db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 100")]
+        counts = {row["status"]: row["count"] for row in db.execute("SELECT status,COUNT(*) AS count FROM jobs GROUP BY status")}
+        events = [dict(row) for row in db.execute("SELECT events.*,jobs.mailbox FROM events JOIN jobs ON jobs.id=events.job_id ORDER BY events.id DESC LIMIT 16")]
+        workers = [dict(row) for row in db.execute("SELECT * FROM workers ORDER BY id")]
+    active = sum(value for key, value in counts.items() if key not in FINAL_STATUSES)
+    return {"jobs": jobs, "events": events, "workers": workers, "summary": {"total": sum(counts.values()), "active": active, "complete": counts.get("COMPLETE", 0), "failed": counts.get("FAILED", 0)}, "testMode": TEST_MODE}
+
+
+@app.get("/api/jobs")
+def list_jobs(status: str | None = None, query: str = Query(default="", max_length=200)) -> list[dict]:
+    clauses, params = [], []
+    if status and status != "ALL":
+        clauses.append("status=?"); params.append(status)
+    if query:
+        clauses.append("(mailbox LIKE ? OR ticket LIKE ? OR requested_by LIKE ?)")
+        pattern = f"%{query}%"; params.extend([pattern, pattern, pattern])
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect() as db:
+        return [row_dict(row) for row in db.execute(f"SELECT * FROM jobs{where} ORDER BY id DESC LIMIT 200", params)]
 
 
 @app.post("/api/jobs", status_code=201)
 def create_job(payload: JobCreate) -> dict:
     if payload.scope == "folder" and not payload.folder_name:
         raise HTTPException(422, "Phải nhập tên thư mục khi chọn phạm vi folder")
-    if payload.auth_mode == "interactive_oauth" and payload.export_engine == "purview":
+    if payload.export_engine == "purview" and payload.auth_mode != "app_only":
         raise HTTPException(422, "Purview worker phải dùng app-only; không nhận mật khẩu user")
     created = now()
     with connect() as db:
-        cursor = db.execute(
-            """INSERT INTO jobs(mailbox,scope,folder_name,export_engine,auth_mode,scheduled_at,
-               destination,status,progress,note,test_mode,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                payload.mailbox.lower(), payload.scope, payload.folder_name,
-                payload.export_engine, payload.auth_mode,
-                payload.scheduled_at.astimezone(timezone.utc).isoformat(),
-                payload.destination, "SCHEDULED", 0, payload.note,
-                int(TEST_MODE), created, created,
-            ),
-        )
-        job_id = cursor.lastrowid
+        cursor = db.execute("""INSERT INTO jobs(mailbox,scope,folder_name,export_engine,auth_mode,scheduled_at,destination,status,progress,note,test_mode,created_at,updated_at,ticket,requested_by,assigned_worker,pst_path,error)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (payload.mailbox.lower(), payload.scope, payload.folder_name, payload.export_engine, payload.auth_mode, payload.scheduled_at.astimezone(timezone.utc).isoformat(), payload.destination, "SCHEDULED", 0, payload.note, int(TEST_MODE), created, created, payload.ticket, payload.requested_by, payload.assigned_worker, "", ""))
+        job_id = int(cursor.lastrowid)
         add_event(db, job_id, "Yêu cầu backup đã được tạo")
-        add_event(db, job_id, "Đang chạy chế độ TEST - chưa truy cập mailbox thật", "WARNING")
+        if TEST_MODE:
+            add_event(db, job_id, "TEST MODE: không truy cập mailbox thật", "WARNING")
         db.commit()
-        row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-    return row_dict(row)
+        return row_dict(require_job(db, job_id))
+
+
+@app.get("/api/jobs/{job_id}")
+def job_detail(job_id: int) -> dict:
+    with connect() as db:
+        job = row_dict(require_job(db, job_id))
+        events = [dict(row) for row in db.execute("SELECT * FROM events WHERE job_id=? ORDER BY id DESC", (job_id,))]
+        artifacts = [dict(row) for row in db.execute("SELECT * FROM artifacts WHERE job_id=? ORDER BY id DESC", (job_id,))]
+    return {"job": job, "events": events, "artifacts": artifacts}
 
 
 @app.get("/api/jobs/{job_id}/events")
 def job_events(job_id: int) -> list[dict]:
+    return job_detail(job_id)["events"]
+
+
+@app.post("/api/jobs/{job_id}/operator-ready")
+def operator_ready(job_id: int, payload: OperatorReady) -> dict:
     with connect() as db:
-        if not db.execute("SELECT 1 FROM jobs WHERE id=?", (job_id,)).fetchone():
-            raise HTTPException(404, "Không tìm thấy job")
-        return [dict(row) for row in db.execute(
-            "SELECT * FROM events WHERE job_id=? ORDER BY id DESC", (job_id,)
-        )]
+        row = require_job(db, job_id)
+        if row["status"] not in {"WAITING_OPERATOR", "SCHEDULED", "FAILED"}:
+            raise HTTPException(409, "Job không ở trạng thái chờ xác nhận PST")
+        timestamp = now()
+        db.execute("UPDATE jobs SET status='PST_READY',progress=50,pst_path=?,bytes_total=?,bytes_done=0,error='',updated_at=? WHERE id=?", (payload.pst_path, payload.size_bytes, timestamp, job_id))
+        db.execute("INSERT INTO artifacts(job_id,kind,path,size_bytes,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (job_id, "PST_SOURCE", payload.pst_path, payload.size_bytes, "READY", timestamp, timestamp))
+        add_event(db, job_id, f"IT xác nhận PST đã export xong: {payload.pst_path}")
+        db.commit()
+    return job_detail(job_id)
+
+
+@app.post("/api/jobs/{job_id}/receipt")
+def ingest_receipt(job_id: int, receipt: ReceiptPayload) -> dict:
+    status = receipt.status.upper()
+    mapped = {"QUEUED": "WAITING_TRANSFER", "TRANSFERRING_BACKGROUND": "TRANSFERRING", "CONNECTING": "TRANSFERRING", "TRANSFERRING": "TRANSFERRING", "TRANSIENTERROR": "TRANSFERRING", "SUSPENDED": "TRANSFERRING", "TRANSFERRED": "VERIFYING", "WAITING_SOURCE_VERIFICATION": "VERIFYING", "VERIFYING_SHA256": "VERIFYING", "COMPLETE": "COMPLETE", "COMPLETE_EXISTING": "COMPLETE", "ERROR": "FAILED", "SIZE_MISMATCH": "FAILED", "HASH_MISMATCH": "FAILED", "SOURCE_CHANGED_STOPPED": "FAILED", "SOURCE_UNAVAILABLE": "FAILED"}.get(status, "TRANSFERRING")
+    total = receipt.bytesTotal or receipt.expectedBytes or 0
+    done = receipt.bytesTransferred or (total if mapped == "COMPLETE" else 0)
+    progress = 100 if mapped == "COMPLETE" else (min(99, int(done * 100 / total)) if total else PROGRESS.get(mapped, 0))
+    error = receipt.errorDescription or receipt.error or ""
+    path = receipt.destinationPath or receipt.sourcePath or ""
+    with connect() as db:
+        require_job(db, job_id)
+        db.execute("UPDATE jobs SET status=?,progress=?,bytes_total=?,bytes_done=?,pst_path=CASE WHEN ?<>'' THEN ? ELSE pst_path END,error=?,updated_at=? WHERE id=?", (mapped, progress, total, done, path, path, error, now(), job_id))
+        level = "ERROR" if mapped == "FAILED" else ("WARNING" if status in {"TRANSIENTERROR", "SUSPENDED"} else "INFO")
+        add_event(db, job_id, f"BITS receipt: {status} ({done}/{total} bytes)" + (f" — {error}" if error else ""), level)
+        db.commit()
+    return job_detail(job_id)
+
+
+@app.post("/api/jobs/{job_id}/retry")
+def retry_job(job_id: int) -> dict:
+    with connect() as db:
+        row = require_job(db, job_id)
+        if row["status"] == "COMPLETE":
+            raise HTTPException(409, "Job đã hoàn tất")
+        target = "WAITING_OPERATOR" if row["export_engine"] == "outlook_manual" and not row["pst_path"] else "WAITING_TRANSFER"
+        db.execute("UPDATE jobs SET status=?,error='',updated_at=? WHERE id=?", (target, now(), job_id))
+        add_event(db, job_id, "IT yêu cầu thử lại/tiếp tục job", "WARNING")
+        db.commit()
+    return job_detail(job_id)
 
 
 @app.post("/api/jobs/{job_id}/cancel")
 def cancel_job(job_id: int) -> dict:
     with connect() as db:
-        row = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Không tìm thấy job")
+        row = require_job(db, job_id)
         if row["status"] == "COMPLETE":
             raise HTTPException(409, "Job đã hoàn tất")
-        db.execute("UPDATE jobs SET status='CANCELLED', updated_at=? WHERE id=?", (now(), job_id))
+        db.execute("UPDATE jobs SET status='CANCELLED',updated_at=? WHERE id=?", (now(), job_id))
         add_event(db, job_id, "Job đã bị hủy bởi IT", "WARNING")
         db.commit()
-    return {"ok": True}
+    return job_detail(job_id)
+
+
+@app.get("/api/workers")
+def list_workers() -> list[dict]:
+    with connect() as db:
+        return [dict(row) for row in db.execute("SELECT * FROM workers ORDER BY id")]
+
+
+@app.post("/api/workers/heartbeat")
+def worker_heartbeat(payload: WorkerHeartbeat) -> dict:
+    with connect() as db:
+        db.execute("""INSERT INTO workers(id,display_name,machine_name,role,status,version,last_seen_at,detail) VALUES(?,?,?,?,?,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name,machine_name=excluded.machine_name,role=excluded.role,status=excluded.status,version=excluded.version,last_seen_at=excluded.last_seen_at,detail=excluded.detail""", (payload.id, payload.display_name, payload.machine_name, payload.role, payload.status, payload.version, now(), payload.detail))
+        db.commit()
+    return {"ok": True, "testMode": TEST_MODE}
 
 
 FRONTEND = ROOT / "frontend" / "dist"

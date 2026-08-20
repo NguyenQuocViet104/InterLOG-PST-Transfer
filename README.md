@@ -278,7 +278,7 @@ Các nội dung đã được kiểm tra trong môi trường thử nghiệm:
 - BITS không sửa được PST bị lỗi do Outlook export không hoàn chỉnh.
 - Kiểm tra SHA-256 trên file 50 GB có thể mất nhiều thời gian và tạo thêm tải đọc đĩa/mạng.
 - Nếu máy người dùng tắt hoàn toàn, job không chạy; job tiếp tục sau khi máy bật và người dùng đăng nhập.
-- Công cụ hiện phục vụ thao tác IT theo từng case, chưa có dashboard quản lý tập trung nhiều máy.
+- Dashboard tập trung đã có ở mức thử nghiệm; worker thật và điều phối nhiều máy chưa được bật production.
 - PST vẫn có các giới hạn vận hành của Outlook; cần kiểm tra khả năng mở/import trước khi xóa dữ liệu nguồn.
 
 ## 14. Khuyến nghị vận hành
@@ -337,7 +337,7 @@ Phiên bản 1.1 đã đủ điều kiện để tiếp tục sử dụng trong 
 - [ ] Kiểm tra folder, email mới/cũ và attachment.
 - [ ] Chỉ xử lý/xóa nguồn sau khi xác minh và bàn giao.
 
-## Phụ lục C - Mail Operations Dashboard (MVP)
+## Phụ lục C - Mail Operations Dashboard 0.2
 
 Repository có thêm MVP tại thư mục `dashboard/`:
 
@@ -346,6 +346,9 @@ Repository có thêm MVP tại thư mục `dashboard/`:
 - Tạo yêu cầu theo mailbox, Mailbox chính, Online Archive hoặc folder cụ thể.
 - Chọn lịch chạy, export engine và thư mục PST đích.
 - Timeline trạng thái từ lúc lên lịch đến export, transfer, verify và hoàn tất.
+- Tìm theo email/ticket, lọc trạng thái và xem trang chi tiết từng job.
+- Có thao tác xác nhận PST đã export, retry/tiếp tục, hủy và nhận trạng thái BITS receipt.
+- Có heartbeat để theo dõi VM worker; toàn bộ sự kiện và artifact được lưu trong SQLite.
 - Mặc định bắt buộc `TEST MODE`; chưa truy cập mailbox thật.
 
 Thiết kế không nhận hoặc lưu password Microsoft 365 của người dùng. Hướng production ưu tiên Microsoft Purview eDiscovery/app-only/RBAC; OAuth tương tác là fallback. Outlook Classic automation không được chạy trong Windows Service.
