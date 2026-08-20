@@ -142,6 +142,11 @@ class LocalComplete(BaseModel):
     manifest_path: str | None = Field(default=None, max_length=1000)
 
 
+class UserCopyConfirm(BaseModel):
+    destination_path: str = Field(min_length=2, max_length=1000)
+    size_bytes: int = Field(default=0, ge=0)
+
+
 class WorkerHeartbeat(BaseModel):
     id: str = Field(min_length=2, max_length=100)
     display_name: str = "VM Worker"
@@ -204,13 +209,13 @@ async def lifespan(_: FastAPI):
     task.cancel()
 
 
-app = FastAPI(title="InterLOG Mail Operations", version="0.3.1", lifespan=lifespan)
+app = FastAPI(title="InterLOG Mail Operations", version="0.3.2", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.3.1", "testMode": TEST_MODE, "database": str(DB_PATH)}
+    return {"status": "ok", "version": "0.3.2", "testMode": TEST_MODE, "database": str(DB_PATH)}
 
 
 @app.get("/api/dashboard")
@@ -353,6 +358,43 @@ def complete_local(job_id: int, payload: LocalComplete) -> dict:
         if manifest_path:
             db.execute("INSERT INTO artifacts(job_id,kind,path,size_bytes,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (job_id, "PST_MANIFEST", str(manifest_path), manifest_path.stat().st_size, "VERIFIED", timestamp, timestamp))
         add_event(db, job_id, f"Graph local backup hoàn tất và đã đăng ký PST: {pst_path}")
+        db.commit()
+    return job_detail(job_id)
+
+
+@app.post("/api/jobs/{job_id}/confirm-user-copy")
+def confirm_user_copy(job_id: int, payload: UserCopyConfirm) -> dict:
+    with connect() as db:
+        row = require_job(db, job_id)
+        if row["export_engine"] != "outlook_manual":
+            raise HTTPException(409, "Xác nhận bàn giao thủ công chỉ dành cho job Outlook")
+        if row["status"] not in {"PST_READY", "WAITING_TRANSFER", "TRANSFERRING"}:
+            raise HTTPException(409, "Job chưa ở bước chuyển PST về máy user")
+        timestamp = now()
+        size = payload.size_bytes or row["bytes_total"]
+        db.execute(
+            "UPDATE jobs SET status='VERIFYING',progress=95,destination=?,bytes_done=?,updated_at=? WHERE id=?",
+            (payload.destination_path, size, timestamp, job_id),
+        )
+        db.execute(
+            "INSERT INTO artifacts(job_id,kind,path,size_bytes,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+            (job_id, "PST_USER_COPY", payload.destination_path, size, "PENDING_OUTLOOK_CHECK", timestamp, timestamp),
+        )
+        add_event(db, job_id, f"IT xác nhận file đã được chuyển về máy user: {payload.destination_path}", "WARNING")
+        db.commit()
+    return job_detail(job_id)
+
+
+@app.post("/api/jobs/{job_id}/verify-user-copy")
+def verify_user_copy(job_id: int) -> dict:
+    with connect() as db:
+        row = require_job(db, job_id)
+        if row["export_engine"] != "outlook_manual" or row["status"] != "VERIFYING":
+            raise HTTPException(409, "Job chưa chờ xác minh PST trên máy user")
+        timestamp = now()
+        db.execute("UPDATE jobs SET status='COMPLETE',progress=100,bytes_done=bytes_total,error='',updated_at=? WHERE id=?", (timestamp, job_id))
+        db.execute("UPDATE artifacts SET status='VERIFIED',updated_at=? WHERE job_id=? AND kind='PST_USER_COPY'", (timestamp, job_id))
+        add_event(db, job_id, "IT xác nhận PST đã mở được bằng Outlook trên máy user; bàn giao hoàn tất")
         db.commit()
     return job_detail(job_id)
 

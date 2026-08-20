@@ -1160,6 +1160,22 @@ td > small {
   background: #fdecec;
   color: #a4262c;
 }
+.workflow-callout {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 11px 12px;
+  border-radius: 6px;
+  background: #fff4ce;
+  color: #6a5200;
+}
+.workflow-callout.verify {
+  background: #edf7f2;
+  color: #0e6245;
+}
+.workflow-callout > svg { width: 18px; flex: none; }
+.workflow-callout b,.workflow-callout span { display: block; font-size: 9px; }
+.workflow-callout span { margin-top: 3px; line-height: 1.45; }
 .dialog-actions {
   display: flex;
   justify-content: flex-end;

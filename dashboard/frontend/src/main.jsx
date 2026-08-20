@@ -414,9 +414,54 @@ function ReadyDialog({ job, onClose, onSaved }) {
   );
 }
 
+function UserCopyDialog({ job, onClose, onSaved }) {
+  const [path, setPath] = useState(job.destination || "D:\\BACKUP-MAIL");
+  const [size, setSize] = useState("");
+  const [error, setError] = useState("");
+  const submit = async (e) => {
+    e.preventDefault();
+    try {
+      await request(`/api/jobs/${job.id}/confirm-user-copy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          destination_path: path,
+          size_bytes: size ? Math.round(Number(size) * 1073741824) : 0,
+        }),
+      });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  return (
+    <div className="overlay">
+      <form className="dialog compact" onSubmit={submit}>
+        <div className="dialog-title">
+          <div>
+            <span className="overline">XÁC NHẬN CHUYỂN FILE</span>
+            <h2>PST đã về máy user</h2>
+            <p>IT chỉ xác nhận sau khi PST Transfer/BITS đã chuyển file xong.</p>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose}><X /></button>
+        </div>
+        <label className="single-field">Đường dẫn PST trên máy user<input required value={path} onChange={(e) => setPath(e.target.value)} /></label>
+        <label className="single-field">Dung lượng file (GB, không bắt buộc)<input type="number" min="0" step="0.01" value={size} onChange={(e) => setSize(e.target.value)} /></label>
+        {error && <div className="error-callout">{error}</div>}
+        <div className="dialog-actions">
+          <button type="button" className="btn secondary" onClick={onClose}>Quay lại</button>
+          <button className="btn primary"><CheckCircle2 />Xác nhận đã chuyển</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function JobDrawer({ jobId, onClose, onChanged, notify }) {
   const [data, setData] = useState(null),
-    [ready, setReady] = useState(false);
+    [ready, setReady] = useState(false),
+    [userCopy, setUserCopy] = useState(false);
   const load = async () => setData(await request(`/api/jobs/${jobId}`));
   useEffect(() => {
     load();
@@ -426,7 +471,12 @@ function JobDrawer({ jobId, onClose, onChanged, notify }) {
       await request(`/api/jobs/${jobId}/${name}`, { method: "POST" });
       await load();
       onChanged();
-      notify(name === "retry" ? "Đã đưa job về hàng đợi" : "Đã hủy job");
+      const messages = {
+        retry: "Đã đưa job về hàng đợi",
+        cancel: "Đã hủy job",
+        "verify-user-copy": "Đã xác minh và hoàn tất bàn giao PST",
+      };
+      notify(messages[name] || "Đã cập nhật job");
     } catch (e) {
       notify(e.message, "error");
     }
@@ -473,6 +523,21 @@ function JobDrawer({ jobId, onClose, onChanged, notify }) {
             {j.error}
           </div>
         )}
+        {j.status === "PST_READY" && j.export_engine === "outlook_manual" && (
+          <div className="workflow-callout">
+            <ArrowLeftRight />
+            <div>
+              <b>PST hiện chỉ nằm trên VM</b>
+              <span>Sang máy user, chạy InterLOG PST Transfer với nguồn UNC của VM. Dashboard không tự ghi file vào máy user.</span>
+            </div>
+          </div>
+        )}
+        {j.status === "VERIFYING" && j.export_engine === "outlook_manual" && (
+          <div className="workflow-callout verify">
+            <CheckCircle2 />
+            <div><b>File đã về máy user, chưa hoàn tất</b><span>Mở PST bằng Outlook Classic và kiểm tra folder, mail, attachment trước khi xác nhận.</span></div>
+          </div>
+        )}
         <div className="metadata">
           <div>
             <span>Phạm vi</span>
@@ -513,6 +578,18 @@ function JobDrawer({ jobId, onClose, onChanged, notify }) {
               PST đã export xong
             </button>
           )}
+          {j.status === "PST_READY" && j.export_engine === "outlook_manual" && (
+            <button className="btn primary" onClick={() => setUserCopy(true)}>
+              <ArrowLeftRight />
+              File đã về máy user
+            </button>
+          )}
+          {j.status === "VERIFYING" && j.export_engine === "outlook_manual" && (
+            <button className="btn primary" onClick={() => action("verify-user-copy")}>
+              <CheckCircle2 />
+              Đã mở và kiểm tra PST
+            </button>
+          )}
           {!["COMPLETE", "CANCELLED"].includes(j.status) && (
             <button className="btn secondary" onClick={() => action("retry")}>
               <RotateCcw />
@@ -551,6 +628,17 @@ function JobDrawer({ jobId, onClose, onChanged, notify }) {
               await load();
               onChanged();
               notify("Đã xác nhận PST sẵn sàng");
+            }}
+          />
+        )}
+        {userCopy && (
+          <UserCopyDialog
+            job={j}
+            onClose={() => setUserCopy(false)}
+            onSaved={async () => {
+              await load();
+              onChanged();
+              notify("Đã ghi nhận file trên máy user; cần mở Outlook để xác minh");
             }}
           />
         )}
