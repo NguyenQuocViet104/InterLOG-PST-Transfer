@@ -337,7 +337,7 @@ Phiên bản 1.1 đã đủ điều kiện để tiếp tục sử dụng trong 
 - [ ] Kiểm tra folder, email mới/cũ và attachment.
 - [ ] Chỉ xử lý/xóa nguồn sau khi xác minh và bàn giao.
 
-## Phụ lục C - Mail Operations Dashboard 0.2
+## Phụ lục C - Mail Operations Dashboard 0.3
 
 Repository có thêm MVP tại thư mục `dashboard/`:
 
@@ -349,6 +349,8 @@ Repository có thêm MVP tại thư mục `dashboard/`:
 - Tìm theo email/ticket, lọc trạng thái và xem trang chi tiết từng job.
 - Có thao tác xác nhận PST đã export, retry/tiếp tục, hủy và nhận trạng thái BITS receipt.
 - Có heartbeat để theo dõi VM worker; toàn bộ sự kiện và artifact được lưu trong SQLite.
+- Có sáu màn hình hoạt động: Tổng quan, Công việc, Chuyển PST, Lịch sử, VM workers và Cấu hình readiness.
+- Có tải báo cáo lịch sử dạng CSV và tự đánh dấu worker offline khi mất heartbeat.
 - Mặc định bắt buộc `TEST MODE`; chưa truy cập mailbox thật.
 
 Thiết kế không nhận hoặc lưu password Microsoft 365 của người dùng. Hướng production ưu tiên Microsoft Purview eDiscovery/app-only/RBAC; OAuth tương tác là fallback. Outlook Classic automation không được chạy trong Windows Service.

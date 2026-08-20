@@ -1,6 +1,15 @@
 # InterLOG Mail Operations Dashboard
 
-Phiên bản dashboard `0.2.0` dành cho IT quản lý toàn bộ vòng đời một yêu cầu backup PST: tiếp nhận yêu cầu, chọn đúng phạm vi, lên lịch export trên VM, xác nhận PST, theo dõi chuyển file và lưu lịch sử trong SQLite.
+Phiên bản dashboard `0.3.0` dành cho IT quản lý toàn bộ vòng đời một yêu cầu backup PST: tiếp nhận yêu cầu, chọn đúng phạm vi, lên lịch export trên VM, xác nhận PST, theo dõi chuyển file và lưu lịch sử trong SQLite.
+
+## Các màn hình
+
+- **Tổng quan:** thống kê, job gần đây và audit log.
+- **Công việc:** tìm kiếm, lọc, tạo job, xem chi tiết, retry và hủy.
+- **Chuyển PST:** tiến độ byte của BITS, lỗi mạng, resume và verify.
+- **Lịch sử:** nhật ký tập trung và tải báo cáo CSV.
+- **VM workers:** hostname, heartbeat, phiên bản và trạng thái online/offline.
+- **Cấu hình:** readiness của SQLite, Outlook, BITS, Purview và chính sách xác thực.
 
 ## Quy trình hiện tại
 
@@ -21,6 +30,20 @@ Dashboard có tìm kiếm theo email/ticket, lọc trạng thái, chi tiết job
 Thêm `-Watch` nếu muốn theo dõi file receipt mỗi 10 giây trong lúc BITS đang chạy. Script chỉ đọc receipt và gửi trạng thái; không đọc nội dung PST.
 
 > Mặc định luôn là `TEST MODE`. Purview connector bị khóa cứng, không truy cập mailbox thật và không nhận/lưu mật khẩu Microsoft 365.
+
+## Giới hạn đã xác nhận
+
+- Outlook Classic export vẫn là thao tác desktop có người giám sát; Microsoft không hỗ trợ chạy Outlook Object Model trong Windows Service.
+- Purview eDiscovery có thể export mailbox items thành PST nhưng cần đúng role/license. Thiết lập hiện tại cho phép chia PST theo package tối đa 10 GB, nên không dùng Purview để cam kết một file PST 50 GB duy nhất.
+- Microsoft Graph hỗ trợ quản lý eDiscovery bằng application permission; một số API export result vẫn có thể thuộc beta nên chưa được bật trong production của project này.
+
+Tài liệu tham khảo chính thức:
+
+- [Fluent 2 layout](https://fluent2.microsoft.design/layout)
+- [Fluent 2 navigation](https://fluent2.microsoft.design/components/web/react/core/nav/usage)
+- [Microsoft Purview exports and downloads](https://learn.microsoft.com/en-us/purview/edisc-features-components)
+- [Microsoft Graph eDiscovery search](https://learn.microsoft.com/en-us/graph/api/resources/security-ediscoverysearch?view=graph-rest-1.0)
+- [Microsoft: Outlook automation is unsuitable for unattended execution](https://learn.microsoft.com/en-us/microsoft-365-apps/outlook/user-interface/oom-unsuitable-in-windows-service)
 
 MVP quản trị yêu cầu export và chuyển PST. Mặc định luôn chạy `TEST MODE`; worker chỉ mô phỏng trạng thái và không truy cập mailbox thật.
 

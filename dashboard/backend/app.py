@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import os
 import re
 import sqlite3
@@ -12,6 +14,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -89,6 +92,18 @@ def row_dict(row: sqlite3.Row | None) -> dict:
     result = dict(row) if row else {}
     if "test_mode" in result:
         result["test_mode"] = bool(result["test_mode"])
+    return result
+
+
+def worker_dict(row: sqlite3.Row) -> dict:
+    result = dict(row)
+    try:
+        age = (datetime.now(timezone.utc) - parse_timestamp(result["last_seen_at"])).total_seconds()
+    except (ValueError, TypeError):
+        age = 999999
+    result["heartbeat_age_seconds"] = max(0, int(age))
+    if age > 45:
+        result["status"] = "OFFLINE"
     return result
 
 
@@ -179,13 +194,13 @@ async def lifespan(_: FastAPI):
     task.cancel()
 
 
-app = FastAPI(title="InterLOG Mail Operations", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="InterLOG Mail Operations", version="0.3.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "version": "0.2.0", "testMode": TEST_MODE, "database": str(DB_PATH)}
+    return {"status": "ok", "version": "0.3.0", "testMode": TEST_MODE, "database": str(DB_PATH)}
 
 
 @app.get("/api/dashboard")
@@ -194,7 +209,7 @@ def dashboard() -> dict:
         jobs = [row_dict(row) for row in db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 100")]
         counts = {row["status"]: row["count"] for row in db.execute("SELECT status,COUNT(*) AS count FROM jobs GROUP BY status")}
         events = [dict(row) for row in db.execute("SELECT events.*,jobs.mailbox FROM events JOIN jobs ON jobs.id=events.job_id ORDER BY events.id DESC LIMIT 16")]
-        workers = [dict(row) for row in db.execute("SELECT * FROM workers ORDER BY id")]
+        workers = [worker_dict(row) for row in db.execute("SELECT * FROM workers ORDER BY id")]
     active = sum(value for key, value in counts.items() if key not in FINAL_STATUSES)
     return {"jobs": jobs, "events": events, "workers": workers, "summary": {"total": sum(counts.values()), "active": active, "complete": counts.get("COMPLETE", 0), "failed": counts.get("FAILED", 0)}, "testMode": TEST_MODE}
 
@@ -210,6 +225,55 @@ def list_jobs(status: str | None = None, query: str = Query(default="", max_leng
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
     with connect() as db:
         return [row_dict(row) for row in db.execute(f"SELECT * FROM jobs{where} ORDER BY id DESC LIMIT 200", params)]
+
+
+@app.get("/api/events")
+def list_events(level: str | None = None, limit: int = Query(default=200, ge=1, le=1000)) -> list[dict]:
+    where, params = "", []
+    if level and level != "ALL":
+        where = " WHERE events.level=?"
+        params.append(level)
+    params.append(limit)
+    with connect() as db:
+        return [dict(row) for row in db.execute(
+            f"SELECT events.*,jobs.mailbox,jobs.ticket FROM events JOIN jobs ON jobs.id=events.job_id{where} ORDER BY events.id DESC LIMIT ?",
+            params,
+        )]
+
+
+@app.get("/api/history.csv")
+def export_history_csv() -> StreamingResponse:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["job_id", "mailbox", "ticket", "scope", "status", "progress", "bytes_total", "scheduled_at", "updated_at", "error"])
+    with connect() as db:
+        for row in db.execute("SELECT id,mailbox,ticket,scope,status,progress,bytes_total,scheduled_at,updated_at,error FROM jobs ORDER BY id DESC"):
+            writer.writerow(list(row))
+    headers = {"Content-Disposition": "attachment; filename=interlog-mail-history.csv"}
+    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv; charset=utf-8", headers=headers)
+
+
+@app.get("/api/system")
+def system_status() -> dict:
+    certificate = bool(os.getenv("INTERLOG_CERTIFICATE_THUMBPRINT"))
+    tenant = bool(os.getenv("INTERLOG_TENANT_ID"))
+    client = bool(os.getenv("INTERLOG_CLIENT_ID"))
+    with connect() as db:
+        db_ok = db.execute("SELECT 1").fetchone()[0] == 1
+    return {
+        "testMode": TEST_MODE,
+        "database": {"ready": db_ok, "path": str(DB_PATH)},
+        "purview": {
+            "ready": (not TEST_MODE) and tenant and client and certificate,
+            "tenantConfigured": tenant,
+            "clientConfigured": client,
+            "certificateConfigured": certificate,
+            "productionLocked": TEST_MODE,
+        },
+        "outlook": {"mode": "manual", "ready": True, "note": "IT export bằng Outlook Classic trên VM"},
+        "bits": {"ready": True, "receiptEndpoint": "/api/jobs/{job_id}/receipt"},
+        "security": {"storesPasswords": False, "authentication": "Certificate/RBAC hoặc OAuth tương tác"},
+    }
 
 
 @app.post("/api/jobs", status_code=201)
@@ -304,7 +368,7 @@ def cancel_job(job_id: int) -> dict:
 @app.get("/api/workers")
 def list_workers() -> list[dict]:
     with connect() as db:
-        return [dict(row) for row in db.execute("SELECT * FROM workers ORDER BY id")]
+        return [worker_dict(row) for row in db.execute("SELECT * FROM workers ORDER BY id")]
 
 
 @app.post("/api/workers/heartbeat")
